@@ -30,8 +30,8 @@ For more information regarding building process, please refer to [Build](https:/
 ## Run
 
 To run all the benchmarks, simply execute ```./runall.sh [number for iteration]``` script. 
-This will run all the benchmarks with specified iteration and save the results (kernel execution time and data transfer latency) into ```./results``` directory.
-You can modify ```runall.sh``` to change size of dataset (```-s``` options from the script). 
+This will run all the benchmarks with specified iterations and save the results (kernel execution time and data transfer latency) into ```./results``` directory.
+You can modify ```runall.sh``` to change the size of dataset (```-s``` options from the script). 
 
 
 ## Cite Us

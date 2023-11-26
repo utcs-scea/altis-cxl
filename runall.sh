@@ -3,8 +3,17 @@
 set -euo pipefail
 
 display_usage() {
-    echo "./runall.sh"
+    echo "./runall.sh [number of run]"
 }
+
+if [[ ( $@ == "--help") ||  $@ == "-h" ]]; then 
+    display_usage
+    exit 0
+elif [[ $# -ne 1 ]]; then
+    display_usage
+    exit 0
+fi 
+
 
 benchmarks1=('gups' 'sort' 'pathfinder' 'gemm')
 benchmarks2=('nw' 'lavamd' 'where' 'particlefilter_naive' 'mandelbrot' 'srad' 'fdtd2d' 'cfd' )
@@ -12,13 +21,14 @@ benchmarks2=('nw' 'lavamd' 'where' 'particlefilter_naive' 'mandelbrot' 'srad' 'f
 # Running these benches
 benchmarks=('gups' 'sort' 'pathfinder' 'nw' 'lavamd' 'where' 'particlefilter_naive' 'mandelbrot' 'srad' 'fdtd2d' 'cfd' )
 
+total_run=$1
+
 pwd=$(pwd)
 mkdir -p $pwd/results
 
 for bench in "${benchmarks[@]}"
 do
-    # 3 runs
-    for i in {1}
+    for i in $(seq 1 $total_run)
     do
         echo 3 | sudo tee /proc/sys/vm/drop_caches
         sudo dmesg -C
