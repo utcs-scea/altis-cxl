@@ -100,6 +100,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <unistd.h>
 
 
 #include <cstdlib>
@@ -252,7 +253,8 @@ d_bench(size_t n, benchtype *t)
     switch (ATOMICTYPE) {
     case ATOMICTYPE_CAS:
       unsigned long long int *address, old, assumed;
-      address = (unsigned long long int *)&t[ran.u64 & (n - 1)].u64;
+      //address = (unsigned long long int *)&t[ran.u64 & (n - 1)].u64;
+      address = (unsigned long long int *)&t[ran.u64 % n].u64;
       old = *address;
       do {
         assumed = old;
@@ -331,11 +333,20 @@ void addBenchmarkSpecOptions(OptionParser &op) {
 /// <param name="op">	[in,out] The operation. </param>
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-void RunBenchmark(ResultDatabase &DB, OptionParser &op) {
+void RunBenchmark(ResultDatabase &DB, OptionParser &op, ofstream &ofile, sem_t *sem) {
   std::cout << "Running GUPS" << std::endl;
   size_t n = 0;
+  size_t n2 = 0;
   const int passes = op.getOptionInt("passes");
+  const bool copy = op.getOptionBool("copy");
+  const bool dha = op.getOptionBool("dha");
+  const bool pageable = op.getOptionBool("pageable");
   const bool uvm = op.getOptionBool("uvm");
+  const bool uvm_prefetch = op.getOptionBool("uvm-prefetch");
+  const bool uvm_oversub = op.getOptionBool("uvm-oversub");
+  const bool is_barrier = op.getOptionBool("sem");
+  string bench_name = op.getOptionString("bench");
+
   int device = 0;
   checkCudaErrors(cudaGetDevice(&device));
 
@@ -350,7 +361,10 @@ void RunBenchmark(ResultDatabase &DB, OptionParser &op) {
   } else {
     n = (size_t) 1 << toShifts;
   }
-
+  if (op.getOptionInt("size") == 4) {
+      n = 1342177280; // 10 GB
+  }
+  std::cout << "Total passes = " << passes << std::endl;
   std::cout << "Total table size = " << n << " (" << n*sizeof(uint64_t) << " bytes.)" << std::endl;
 
   starts();
@@ -369,10 +383,62 @@ void RunBenchmark(ResultDatabase &DB, OptionParser &op) {
          prop.maxThreadsPerMultiProcessor);
 
   benchtype *d_t = NULL;
+  benchtype *dd_t = NULL;
+  benchtype *h_t = NULL;
+  cudaEvent_t begin, end;
+  checkCudaErrors(cudaEventCreate(&begin));
+  checkCudaErrors(cudaEventCreate(&end));
+
   if (uvm) {
-    checkCudaErrors(cudaMallocManaged((void **)&d_t, n * sizeof(benchtype)));
-  } else {
-    checkCudaErrors(cudaMalloc((void **)&d_t, n * sizeof(benchtype)));
+      checkCudaErrors(cudaMallocManaged((void **)&d_t, n * sizeof(benchtype)));
+      memset(d_t, 1,  n * sizeof(benchtype));
+      printf("[uvm] Done init\n");
+      checkCudaErrors(cudaEventRecord(begin));
+  } else if (uvm_prefetch) {
+      checkCudaErrors(cudaMallocManaged((void **)&d_t, n * sizeof(benchtype)));
+      memset(d_t, 1,  n * sizeof(benchtype));
+      printf("[uvm_prefetch] Done init\n");
+
+      checkCudaErrors(cudaEventRecord(begin));
+      checkCudaErrors(cudaMemPrefetchAsync(d_t, n * sizeof(benchtype), 0));
+      checkCudaErrors(cudaDeviceSynchronize());
+      printf("[uvm_prefetch] Done copying\n");
+  } else if (copy) {
+      checkCudaErrors(cudaMallocHost(&h_t, n * sizeof(benchtype)));
+      memset(h_t, 1,  n * sizeof(benchtype));
+      checkCudaErrors(cudaMalloc(&d_t, n * sizeof(benchtype)));
+      printf("[copy] Done init\n");
+
+      checkCudaErrors(cudaEventRecord(begin));
+      checkCudaErrors(cudaMemcpy(d_t, h_t, n * sizeof(benchtype), cudaMemcpyHostToDevice));
+      printf("[copy] Done copying\n");
+  } else if (dha) {
+      checkCudaErrors(cudaHostAlloc(&d_t, n * sizeof(benchtype), cudaHostAllocDefault));
+      //memset(d_t, 1,  n * sizeof(benchtype));
+      printf("[copy] Done init\n");
+
+      checkCudaErrors(cudaEventRecord(begin));
+      fflush(stdout);
+  } else if (pageable) {
+      h_t = (benchtype*)malloc(n * sizeof(benchtype));
+      memset(h_t, 1,  n * sizeof(benchtype));
+      checkCudaErrors(cudaMalloc(&d_t, n * sizeof(benchtype)));
+      printf("[copy] Done init\n");
+
+      // (taeklim): Waiting for the other apps before copying
+      if (is_barrier) {
+          int sval;
+          sem_post(sem);
+          sem_getvalue(sem, &sval);
+          while (sval == 1) {
+              sem_getvalue(sem, &sval);
+          }
+          printf("[Barrier] Copy starts\n");
+      }
+
+      checkCudaErrors(cudaEventRecord(begin));
+      checkCudaErrors(cudaMemcpy(d_t, h_t, n * sizeof(benchtype), cudaMemcpyHostToDevice));
+      printf("[copy] Done copying\n");
   }
 
   // max warp size
@@ -380,65 +446,61 @@ void RunBenchmark(ResultDatabase &DB, OptionParser &op) {
             (prop.maxThreadsPerMultiProcessor / prop.warpSize));
   // # as if scheduling warps instead of blocks
   dim3 thread(prop.warpSize);
-  cudaEvent_t begin, end;
-  checkCudaErrors(cudaEventCreate(&begin));
-  checkCudaErrors(cudaEventCreate(&end));
   void *p_error;
   checkCudaErrors(cudaGetSymbolAddress(&p_error, d_error));
 
+  float ms;
+  checkCudaErrors(cudaEventRecord(end));
+  checkCudaErrors(cudaEventSynchronize(end));
+  checkCudaErrors(cudaEventElapsedTime(&ms, begin, end));
+  double transferTime = ms * 1.0e-3;
+
+  // (taeklim): Waiting for the other apps finishes the initialization
+  if (is_barrier && uvm) {
+      int sval;
+      sem_post(sem);
+      sem_getvalue(sem, &sval);
+      while (sval == 1) {
+          sem_getvalue(sem, &sval);
+      }
+      printf("[Barrier] Kernel starts\n");
+  }
+
+  checkCudaErrors(cudaEventRecord(begin));
   string atts = "ATOMICTYPE_CAS";
   for (int i = 0; i < passes; i++) {
-    d_init<<<grid, thread>>>(n, d_t);
-    checkCudaErrors(cudaEventRecord(begin));
+    //d_init<<<grid, thread>>>(n, d_t);
     d_bench<ATOMICTYPE_CAS><<<grid, thread>>>(n, d_t);
     checkCudaErrors(cudaEventRecord(end));
     checkCudaErrors(cudaEventSynchronize(end));
 
-    float ms;
-    checkCudaErrors(cudaEventElapsedTime(&ms, begin, end));
-
-    double time = ms * 1.0e-3;
-    DB.AddResult("Elapsed time", atts, "seconds", time);
-    double gups = 4 * n / (double) ms * 1.0e-6;
-    DB.AddResult("Giga Updates per second", atts, "GUP/s", gups);
-
     cudaMemset(d_error, 0, sizeof(uint32_t));
-    d_check<<<grid, thread>>>(n, d_t);
-    uint32_t h_error;
-    checkCudaErrors(cudaMemcpy(&h_error, p_error, sizeof(uint32_t), cudaMemcpyDeviceToHost));
-    if (op.getOptionBool("verbose")) {
-      printf("Verification (ATOMICTYPE_CAS): Found %u errors.\n", h_error);
-    }
+    //d_check<<<grid, thread>>>(n, d_t);
+//    uint32_t h_error;
+//    checkCudaErrors(cudaMemcpy(&h_error, p_error, sizeof(uint32_t), cudaMemcpyDeviceToHost));
+//    if (op.getOptionBool("verbose")) {
+//      printf("Verification (ATOMICTYPE_CAS): Found %u errors.\n", h_error);
+//    }
+    cudaDeviceSynchronize();
   }
+  //float ms;
+  checkCudaErrors(cudaEventElapsedTime(&ms, begin, end));
+  double kernelTime = ms * 1.0e-3;
+  double totalTime = kernelTime + transferTime;
 
-  atts = "ATOMICTYPE_XOR";
-  for (int i = 0; i < passes; i++) {
-    d_init<<<grid, thread>>>(n, d_t);
-    checkCudaErrors(cudaEventRecord(begin));
-    d_bench<ATOMICTYPE_XOR><<<grid, thread>>>(n, d_t);
-    checkCudaErrors(cudaEventRecord(end));
-    checkCudaErrors(cudaEventSynchronize(end));
-
-    float ms;
-    checkCudaErrors(cudaEventElapsedTime(&ms, begin, end));
-
-    double time = ms * 1.0e-3;
-    DB.AddResult("Elapsed time", atts, "seconds", time);
-    double gups = 4 * n / (double) ms * 1.0e-6;
-    DB.AddResult("Giga Updates per second", atts, "GUP/s", gups);
-    // d_bench<ATOMICTYPE_XOR><<<grid, thread>>>(n, d_t);
-    // void *p_error;
-    // checkCudaErrors(cudaGetSymbolAddress(&p_error, d_error));
-    cudaMemset(d_error, 0, sizeof(uint32_t));
-    d_check<<<grid, thread>>>(n, d_t);
-    uint32_t h_error;
-    checkCudaErrors(cudaMemcpy(&h_error, p_error, sizeof(uint32_t), cudaMemcpyDeviceToHost));
-    if (op.getOptionBool("verbose")) {
-      printf("Verification (ATOMICTYPE_XOR): Found %u errors.\n", h_error);
-    }
-  }
+  ofile << bench_name  << ", " << totalTime << ", " << endl;
+  DB.AddResult("Elapsed kernel time", atts, "seconds", kernelTime);
+  DB.AddResult("Elapsed total time", atts, "seconds", totalTime);
+  double gups = 4 * n / ((double)totalTime * 1.0e-6);
+  DB.AddResult("Giga Updates per second", atts, "GUP/s", gups);
 
   checkCudaErrors(cudaEventDestroy(end));
   checkCudaErrors(cudaEventDestroy(begin));
-  checkCudaErrors(cudaFree(d_t));
+  if (dha) {
+      checkCudaErrors(cudaFreeHost(d_t));
+  } else if (copy) {
+      checkCudaErrors(cudaFreeHost(h_t));
+  } else {
+      checkCudaErrors(cudaFree(d_t));
+  }
 }

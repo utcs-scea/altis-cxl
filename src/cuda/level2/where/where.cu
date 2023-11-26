@@ -127,18 +127,24 @@ void seedArr(int *arr, int size) {
 /// <param name="coverage">	The coverage. </param>
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-void where(ResultDatabase &resultDB, OptionParser &op, int size, int coverage) {
+void where(ResultDatabase &resultDB, OptionParser &op, int size, int coverage, ofstream &ofile, sem_t *sem) {
     const bool uvm = op.getOptionBool("uvm");
+    const bool copy = op.getOptionBool("copy");
+    const bool pageable = op.getOptionBool("pageable");
     const bool uvm_advise = op.getOptionBool("uvm-advise");
     const bool uvm_prefetch = op.getOptionBool("uvm-prefetch");
     const bool uvm_prefetch_advise = op.getOptionBool("uvm-prefetch-advise");
+    string bench_name = op.getOptionString("bench");
+    const bool is_barrier = op.getOptionBool("sem");
     int device = 0;
     checkCudaErrors(cudaGetDevice(&device));
 
     int *arr = NULL;
     if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise) {
         checkCudaErrors(cudaMallocManaged(&arr, sizeof(int) * size));
-    } else {
+    } else if (copy) {
+        checkCudaErrors(cudaMallocHost(&arr, sizeof(int) * size));
+    } else if (pageable) {
         arr = (int*)malloc(sizeof(int) * size);
         assert(arr);
     }
@@ -154,25 +160,38 @@ void where(ResultDatabase &resultDB, OptionParser &op, int size, int coverage) {
         d_arr = arr;
         checkCudaErrors(cudaMallocManaged( (void**) &d_results, sizeof(int) * size));
         checkCudaErrors(cudaMallocManaged( (void**) &d_prefix, sizeof(int) * size));
-    } else {
+    } else if (copy || pageable) {
         checkCudaErrors(cudaMalloc( (void**) &d_arr, sizeof(int) * size));
         checkCudaErrors(cudaMalloc( (void**) &d_results, sizeof(int) * size));
         checkCudaErrors(cudaMalloc( (void**) &d_prefix, sizeof(int) * size));
     }
 
-    checkCudaErrors(cudaEventRecord(start, 0));
     if (uvm) {
+        checkCudaErrors(cudaEventRecord(start, 0));
         // do nothing
     } else if (uvm_advise) {
+        checkCudaErrors(cudaEventRecord(start, 0));
         checkCudaErrors(cudaMemAdvise(d_arr, sizeof(int) * size, cudaMemAdviseSetReadMostly, device));
         checkCudaErrors(cudaMemAdvise(d_arr, sizeof(int) * size, cudaMemAdviseSetPreferredLocation, device));
     } else if (uvm_prefetch) {
+        checkCudaErrors(cudaEventRecord(start, 0));
         checkCudaErrors(cudaMemPrefetchAsync(d_arr, sizeof(int) * size, device));
     } else if (uvm_prefetch_advise) {
+        checkCudaErrors(cudaEventRecord(start, 0));
         checkCudaErrors(cudaMemAdvise(d_arr, sizeof(int) * size, cudaMemAdviseSetReadMostly, device));
         checkCudaErrors(cudaMemAdvise(d_arr, sizeof(int) * size, cudaMemAdviseSetPreferredLocation, device));
         checkCudaErrors(cudaMemPrefetchAsync(d_arr, sizeof(int) * size, device));
-    } else {
+    } else if (copy || pageable) {
+        if (is_barrier && pageable) {
+            int sval;
+            sem_post(sem);
+            sem_getvalue(sem, &sval);
+            while (sval == 1) {
+                sem_getvalue(sem, &sval);
+            }
+            printf("[Barrier] Copying starts\n");
+        }
+        checkCudaErrors(cudaEventRecord(start, 0));
         checkCudaErrors(cudaMemcpy(d_arr, arr, sizeof(int) * size, cudaMemcpyHostToDevice));
     }
     checkCudaErrors(cudaEventRecord(stop, 0));
@@ -180,6 +199,16 @@ void where(ResultDatabase &resultDB, OptionParser &op, int size, int coverage) {
     checkCudaErrors(cudaEventElapsedTime(&elapsedTime, start, stop));
     transferTime += elapsedTime * 1.e-3;
 
+    // (taeklim): Waiting for the other apps finishes the initialization
+    if (is_barrier && uvm) {
+        int sval;
+        sem_post(sem);
+        sem_getvalue(sem, &sval);
+        while (sval == 1) {
+            sem_getvalue(sem, &sval);
+        }
+        printf("[Barrier] Kernel starts\n");
+    }
     dim3 grid(size / 1024 + 1, 1, 1);
     dim3 threads(1024, 1, 1);
     checkCudaErrors(cudaEventRecord(start, 0));
@@ -241,7 +270,7 @@ void where(ResultDatabase &resultDB, OptionParser &op, int size, int coverage) {
         checkCudaErrors(cudaMemAdvise(final, sizeof(int) * matchSize, cudaMemAdviseSetReadMostly, device));
         checkCudaErrors(cudaMemAdvise(final, sizeof(int) * matchSize, cudaMemAdviseSetPreferredLocation, device));
         checkCudaErrors(cudaMemPrefetchAsync(final, sizeof(int) * matchSize, cudaCpuDeviceId));
-    } else {
+    } else if (copy || pageable) {
         checkCudaErrors(cudaMemcpy(final, d_final, sizeof(int) * matchSize, cudaMemcpyDeviceToHost));
     }
     checkCudaErrors(cudaEventRecord(stop, 0));
@@ -254,9 +283,17 @@ void where(ResultDatabase &resultDB, OptionParser &op, int size, int coverage) {
         checkCudaErrors(cudaFree(d_results));
         checkCudaErrors(cudaFree(d_prefix));
         checkCudaErrors(cudaFree(d_final));
-    } else {
+    } else if (pageable) {
         free(arr);
         free(final);
+        checkCudaErrors(cudaFree(d_arr));
+        checkCudaErrors(cudaFree(d_results));
+        checkCudaErrors(cudaFree(d_prefix));
+        checkCudaErrors(cudaFree(d_final));
+    } else if (copy) {
+        checkCudaErrors(cudaFreeHost(arr));
+        free(final);
+
         checkCudaErrors(cudaFree(d_arr));
         checkCudaErrors(cudaFree(d_results));
         checkCudaErrors(cudaFree(d_prefix));
@@ -270,6 +307,7 @@ void where(ResultDatabase &resultDB, OptionParser &op, int size, int coverage) {
     resultDB.AddResult("where_total_time", atts, "sec", kernelTime+transferTime);
     resultDB.AddResult("where_parity", atts, "N", transferTime / kernelTime);
     resultDB.AddOverall("Time", "sec", kernelTime+transferTime);
+    ofile << bench_name << ", " << kernelTime + transferTime << ", " << endl;
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -294,7 +332,8 @@ void addBenchmarkSpecOptions(OptionParser &op) {
 /// <param name="op">	   	[in,out] The operation. </param>
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-void RunBenchmark(ResultDatabase &resultDB, OptionParser &op) {
+//void RunBenchmark(ResultDatabase &resultDB, OptionParser &op) {
+void RunBenchmark(ResultDatabase &resultDB, OptionParser &op, ofstream &ofile, sem_t *sem) {
     printf("Running Where\n");
 
     srand(7);
@@ -323,7 +362,7 @@ void RunBenchmark(ResultDatabase &resultDB, OptionParser &op) {
         if(!quiet) {
             printf("Pass %d: ", i);
         }
-        where(resultDB, op, size, coverage);
+        where(resultDB, op, size, coverage, ofile, sem);
         if(!quiet) {
             printf("Done.\n");
         }

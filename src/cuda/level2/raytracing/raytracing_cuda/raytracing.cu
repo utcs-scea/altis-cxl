@@ -236,8 +236,10 @@ void addBenchmarkSpecOptions(OptionParser &op) {
 /// <param name="op">	[in,out] The options specified. </param>
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-void RunBenchmark(ResultDatabase &DB, OptionParser &op) {
+void RunBenchmark(ResultDatabase &DB, OptionParser &op, ofstream &ofile, sem_t *sem) {
     const bool uvm = op.getOptionBool("uvm");
+    const bool copy = op.getOptionBool("copy");
+    const bool pageable = op.getOptionBool("pageable");
     const bool uvm_advise = op.getOptionBool("uvm-advise");
     const bool uvm_prefetch = op.getOptionBool("uvm-prefetch");
     const bool uvm_prefetch_advise = op.getOptionBool("uvm-prefetch-advise");

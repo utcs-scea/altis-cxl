@@ -67,7 +67,7 @@ int g_nSteps = DEFAULTSTEPS;
 LPFNKMEANS g_lpfnKMeans = NULL;
 LPFNBNC g_lpfnBnc = NULL;
 /* Change the input addr to whatever you want */
-char *g_lpszDefaultInput = "./inputs/random-n1000000-d128-c128.txt";
+char *g_lpszDefaultInput = "/home/tkim/altis/src/cuda/level2/kmeans/inputs/random-n10000-d20-c16.txt";
 char g_vInputFile[FILE_STR_BUFF_LEN];
 char g_vKMeansVersion[FILE_STR_BUFF_LEN];
 int g_nRank;
@@ -124,7 +124,7 @@ void addBenchmarkSpecOptions(OptionParser &op) {
     // op.addOption("cpu", OPT_BOOL, "0", "perform accumulation on CPU instead");
 }
 
-void RunBenchmark(ResultDatabase &DB, OptionParser &op) {
+void RunBenchmark(ResultDatabase &DB, OptionParser &op, ofstream &ofile, sem_t *sem) {
     int dev = op.getOptionInt("device");
     CUDA_SAFE_CALL(cudaSetDevice(dev));
     g_nRank = op.getOptionInt("rank");

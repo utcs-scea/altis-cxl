@@ -85,7 +85,7 @@ void runTest(int argc, char **argv);
 /// <returns>	A float. </returns>
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-float srad(ResultDatabase &resultDB, OptionParser &op, float* matrix, int imageSize, int speckleSize, int iters);
+float srad(ResultDatabase &resultDB, OptionParser &op, float* matrix, int imageSize, int speckleSize, int iters, ofstream &ofile, sem_t *sem);
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 /// <summary>	Srad gridsync. </summary>
@@ -127,16 +127,20 @@ void addBenchmarkSpecOptions(OptionParser &op) {
 /// <param name="op">	   	[in,out] The operation. </param>
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-void RunBenchmark(ResultDatabase &resultDB, OptionParser &op) {
+//void RunBenchmark(ResultDatabase &resultDB, OptionParser &op) {
+void RunBenchmark(ResultDatabase &resultDB, OptionParser &op, ofstream &ofile, sem_t *sem) {
   printf("Running SRAD\n");
 
   srand(SEED);
   bool quiet = op.getOptionBool("quiet");
   const bool uvm = op.getOptionBool("uvm");
+  const bool copy = op.getOptionBool("copy");
+  const bool pageable = op.getOptionBool("pageable");
   const bool uvm_advise = op.getOptionBool("uvm-advice");
   const bool uvm_prefetch = op.getOptionBool("uvm-prefetch");
   const bool uvm_prefetch_advise = op.getOptionBool("uvm-prefetch-advise");
   const bool coop = op.getOptionBool("coop");
+  const bool is_barrier = op.getOptionBool("sem");
   int device = 0;
   checkCudaErrors(cudaGetDevice(&device));
 
@@ -169,7 +173,10 @@ void RunBenchmark(ResultDatabase &resultDB, OptionParser &op) {
     float *matrix = NULL;
     if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise) {
         checkCudaErrors(cudaMallocManaged(&matrix, imageSize * imageSize * sizeof(float)));
-    } else {
+    } else if (copy) {
+        checkCudaErrors(cudaMallocHost(&matrix, imageSize * imageSize * sizeof(float)));
+        assert(matrix);
+    } else if (pageable) {
         matrix = (float*)malloc(imageSize * imageSize * sizeof(float));
         assert(matrix);
     }
@@ -177,7 +184,7 @@ void RunBenchmark(ResultDatabase &resultDB, OptionParser &op) {
     if (!quiet) {
         printf("Pass %d:\n", i);
     }
-    float time = srad(resultDB, op, matrix, imageSize, speckleSize, iters);
+    float time = srad(resultDB, op, matrix, imageSize, speckleSize, iters, ofile, sem);
     if (!quiet) {
         printf("Running SRAD...Done.\n");
     }
@@ -199,7 +206,9 @@ void RunBenchmark(ResultDatabase &resultDB, OptionParser &op) {
     }
     if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise) {
         checkCudaErrors(cudaFree(matrix));
-    } else {
+    } else if (copy) {
+        checkCudaErrors(cudaFreeHost(matrix));
+    } else if (pageable) {
         free(matrix);
     }
   }
@@ -221,163 +230,193 @@ void RunBenchmark(ResultDatabase &resultDB, OptionParser &op) {
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 float srad(ResultDatabase &resultDB, OptionParser &op, float* matrix, int imageSize,
-          int speckleSize, int iters) {
+        int speckleSize, int iters, ofstream &ofile, sem_t *sem) {
     const bool uvm = op.getOptionBool("uvm");
     const bool uvm_advise = op.getOptionBool("uvm-advise");
     const bool uvm_prefetch = op.getOptionBool("uvm-prefetch");
     const bool uvm_prefetch_advise = op.getOptionBool("uvm-prefetch-advise");
     const bool coop = op.getOptionBool("coop");
+    const bool copy = op.getOptionBool("copy");
+    const bool pageable = op.getOptionBool("pageable");
+    const bool is_barrier = op.getOptionBool("sem");
+    string bench_name = op.getOptionString("bench");
     int device = 0;
     checkCudaErrors(cudaGetDevice(&device));
-
 
     kernelTime = 0.0f;
     transferTime = 0.0f;
     int rows, cols, size_I, size_R, niter, iter;
     float *I, *J, lambda, q0sqr, sum, sum2, tmp, meanROI, varROI;
 
-  float *J_cuda;
-  float *C_cuda;
-  float *E_C, *W_C, *N_C, *S_C;
+    float *J_cuda;
+    float *C_cuda;
+    float *E_C, *W_C, *N_C, *S_C;
 
-  unsigned int r1, r2, c1, c2;
-  float *c;
+    unsigned int r1, r2, c1, c2;
+    float *c;
 
-  rows = imageSize;  // number of rows in the domain
-  cols = imageSize;  // number of cols in the domain
-  if ((rows % 16 != 0) || (cols % 16 != 0)) {
-    fprintf(stderr, "rows and cols must be multiples of 16\n");
-    exit(1);
-  }
-  r1 = 0;            // y1 position of the speckle
-  r2 = speckleSize;  // y2 position of the speckle
-  c1 = 0;            // x1 position of the speckle
-  c2 = speckleSize;  // x2 position of the speckle
-  lambda = 0.5;      // Lambda value
-  niter = iters;     // number of iterations
-
-  size_I = cols * rows;
-  size_R = (r2 - r1 + 1) * (c2 - c1 + 1);
-
-  if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise) {
-    checkCudaErrors(cudaMallocManaged(&J, sizeof(float) * size_I));
-    checkCudaErrors(cudaMallocManaged(&c, sizeof(float) * size_I));
-  } else {
-    I = (float *)malloc(size_I * sizeof(float));
-    assert(I);
-    J = (float *)malloc(size_I * sizeof(float));
-    assert(J);
-    c = (float *)malloc(sizeof(float) * size_I);
-    assert(c);
-  }
-
-  // Allocate device memory
-  if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise) {
-    J_cuda = J;
-    C_cuda = c;
-    checkCudaErrors(cudaMallocManaged((void **)&E_C, sizeof(float) * size_I));
-    checkCudaErrors(cudaMallocManaged((void **)&W_C, sizeof(float) * size_I));
-    checkCudaErrors(cudaMallocManaged((void **)&S_C, sizeof(float) * size_I));
-    checkCudaErrors(cudaMallocManaged((void **)&N_C, sizeof(float) * size_I));
-  } else {
-    checkCudaErrors(cudaMalloc((void **)&J_cuda, sizeof(float) * size_I));
-    checkCudaErrors(cudaMalloc((void **)&C_cuda, sizeof(float) * size_I));
-    checkCudaErrors(cudaMalloc((void **)&E_C, sizeof(float) * size_I));
-    checkCudaErrors(cudaMalloc((void **)&W_C, sizeof(float) * size_I));
-    checkCudaErrors(cudaMalloc((void **)&S_C, sizeof(float) * size_I));
-    checkCudaErrors(cudaMalloc((void **)&N_C, sizeof(float) * size_I));
-  }
-
-  // copy random matrix
-  if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise) {
-    I = matrix;
-  } else {
-    memcpy(I, matrix, rows*cols*sizeof(float));
-  }
-
-  for (int k = 0; k < size_I; k++) {
-    J[k] = (float)exp(I[k]);
-  }
-  for (iter = 0; iter < niter; iter++) {
-    sum = 0;
-    sum2 = 0;
-    for (int i = r1; i <= r2; i++) {
-      for (int j = c1; j <= c2; j++) {
-        tmp = J[i * cols + j];
-        sum += tmp;
-        sum2 += tmp * tmp;
-      }
+    rows = imageSize;  // number of rows in the domain
+    cols = imageSize;  // number of cols in the domain
+    if ((rows % 16 != 0) || (cols % 16 != 0)) {
+        fprintf(stderr, "rows and cols must be multiples of 16\n");
+        exit(1);
     }
-    meanROI = sum / size_R;
-    varROI = (sum2 / size_R) - meanROI * meanROI;
-    q0sqr = varROI / (meanROI * meanROI);
+    r1 = 0;            // y1 position of the speckle
+    r2 = speckleSize;  // y2 position of the speckle
+    c1 = 0;            // x1 position of the speckle
+    c2 = speckleSize;  // x2 position of the speckle
+    lambda = 0.5;      // Lambda value
+    niter = iters;     // number of iterations
 
-    // Currently the input size must be divided by 16 - the block size
-    int block_x = cols / BLOCK_SIZE;
-    int block_y = rows / BLOCK_SIZE;
+    size_I = cols * rows;
+    size_R = (r2 - r1 + 1) * (c2 - c1 + 1);
 
-    dim3 dimBlock(BLOCK_SIZE, BLOCK_SIZE);
-    dim3 dimGrid(block_x, block_y);
-
-    // Copy data from main memory to device memory
-    checkCudaErrors(cudaEventRecord(start, 0));
-    if (uvm) {
-        // do nothing
-    } else if (uvm_advise) {
-      checkCudaErrors(cudaMemAdvise(J_cuda, sizeof(float) * size_I, cudaMemAdviseSetPreferredLocation, device));
-    } else if (uvm_prefetch) {
-      checkCudaErrors(cudaMemPrefetchAsync(J_cuda, sizeof(float) * size_I, device));
-    } else if (uvm_prefetch_advise) {
-      checkCudaErrors(cudaMemAdvise(J_cuda, sizeof(float) * size_I, cudaMemAdviseSetPreferredLocation, device));
-      checkCudaErrors(cudaMemPrefetchAsync(J_cuda, sizeof(float) * size_I, device));
-    } else {
-      checkCudaErrors(cudaMemcpy(J_cuda, J, sizeof(float) * size_I, cudaMemcpyHostToDevice));
+    if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise) {
+        checkCudaErrors(cudaMallocManaged(&J, sizeof(float) * size_I));
+        checkCudaErrors(cudaMallocManaged(&c, sizeof(float) * size_I));
+    } else if (copy) {
+        //checkCudaErrors(cudaMallocHost(&I, size_I * sizeof(float)));
+        checkCudaErrors(cudaMallocHost(&J, size_I * sizeof(float)));
+        checkCudaErrors(cudaMallocHost(&c, size_I * sizeof(float)));
+    } else if (pageable) {
+        I = (float *)malloc(size_I * sizeof(float));
+        assert(I);
+        J = (float *)malloc(size_I * sizeof(float));
+        assert(J);
+        c = (float *)malloc(sizeof(float) * size_I);
+        assert(c);
     }
-    checkCudaErrors(cudaEventRecord(stop, 0));
-    checkCudaErrors(cudaEventSynchronize(stop));
-    checkCudaErrors(cudaEventElapsedTime(&elapsed, start, stop));
-    transferTime += elapsed * 1.e-3;
 
-    // Run kernels
-    checkCudaErrors(cudaEventRecord(start, 0));
-    srad_cuda_1<<<dimGrid, dimBlock>>>(E_C, W_C, N_C, S_C, J_cuda, C_cuda, cols,
-                                       rows, q0sqr);
-    checkCudaErrors(cudaEventRecord(stop, 0));
-    checkCudaErrors(cudaEventSynchronize(stop));
-    checkCudaErrors(cudaEventElapsedTime(&elapsed, start, stop));
-    kernelTime += elapsed * 1.e-3;
-    CHECK_CUDA_ERROR();
-
-    checkCudaErrors(cudaEventRecord(start, 0));
-    srad_cuda_2<<<dimGrid, dimBlock>>>(E_C, W_C, N_C, S_C, J_cuda, C_cuda, cols,
-                                       rows, lambda, q0sqr);
-    checkCudaErrors(cudaEventRecord(stop, 0));
-    checkCudaErrors(cudaEventSynchronize(stop));
-    checkCudaErrors(cudaEventElapsedTime(&elapsed, start, stop));
-    kernelTime += elapsed * 1.e-3;
-    CHECK_CUDA_ERROR();
-
-    // Copy data from device memory to main memory
-    checkCudaErrors(cudaEventRecord(start, 0));
-
-    if (uvm) {
-      // do nothing
-    } else if (uvm_advise) {
-      checkCudaErrors(cudaMemAdvise(J_cuda, sizeof(float) * size_I, cudaMemAdviseSetPreferredLocation, cudaCpuDeviceId));
-    } else if (uvm_prefetch) {
-      checkCudaErrors(cudaMemPrefetchAsync(J_cuda, sizeof(float) * size_I, cudaCpuDeviceId));
-    } else if (uvm_prefetch_advise) {
-      checkCudaErrors(cudaMemAdvise(J_cuda, sizeof(float) * size_I, cudaMemAdviseSetPreferredLocation, cudaCpuDeviceId));
-      checkCudaErrors(cudaMemAdvise(J_cuda, sizeof(float) * size_I, cudaMemAdviseSetReadMostly, cudaCpuDeviceId));
-      checkCudaErrors(cudaMemPrefetchAsync(J_cuda, sizeof(float) * size_I, cudaCpuDeviceId));
-    } else {
-      checkCudaErrors(cudaMemcpy(J, J_cuda, sizeof(float) * size_I, cudaMemcpyDeviceToHost));
+    // Allocate device memory
+    if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise) {
+        J_cuda = J;
+        C_cuda = c;
+        checkCudaErrors(cudaMallocManaged((void **)&E_C, sizeof(float) * size_I));
+        checkCudaErrors(cudaMallocManaged((void **)&W_C, sizeof(float) * size_I));
+        checkCudaErrors(cudaMallocManaged((void **)&S_C, sizeof(float) * size_I));
+        checkCudaErrors(cudaMallocManaged((void **)&N_C, sizeof(float) * size_I));
+    } else if (copy || pageable) {
+        checkCudaErrors(cudaMalloc((void **)&J_cuda, sizeof(float) * size_I));
+        checkCudaErrors(cudaMalloc((void **)&C_cuda, sizeof(float) * size_I));
+        checkCudaErrors(cudaMalloc((void **)&E_C, sizeof(float) * size_I));
+        checkCudaErrors(cudaMalloc((void **)&W_C, sizeof(float) * size_I));
+        checkCudaErrors(cudaMalloc((void **)&S_C, sizeof(float) * size_I));
+        checkCudaErrors(cudaMalloc((void **)&N_C, sizeof(float) * size_I));
     }
-    checkCudaErrors(cudaEventRecord(stop, 0));
-    checkCudaErrors(cudaEventSynchronize(stop));
-    checkCudaErrors(cudaEventElapsedTime(&elapsed, start, stop));
-    transferTime += elapsed * 1.e-3;
-  }
+
+    // copy random matrix
+    if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise || copy) {
+        I = matrix;
+    } else if (pageable) {
+        memcpy(I, matrix, rows*cols*sizeof(float));
+    }
+
+    for (int k = 0; k < size_I; k++) {
+        J[k] = (float)exp(I[k]);
+    }
+    for (iter = 0; iter < niter; iter++) {
+        sum = 0;
+        sum2 = 0;
+        for (int i = r1; i <= r2; i++) {
+            for (int j = c1; j <= c2; j++) {
+                tmp = J[i * cols + j];
+                sum += tmp;
+                sum2 += tmp * tmp;
+            }
+        }
+        meanROI = sum / size_R;
+        varROI = (sum2 / size_R) - meanROI * meanROI;
+        q0sqr = varROI / (meanROI * meanROI);
+
+        // Currently the input size must be divided by 16 - the block size
+        int block_x = cols / BLOCK_SIZE;
+        int block_y = rows / BLOCK_SIZE;
+
+        dim3 dimBlock(BLOCK_SIZE, BLOCK_SIZE);
+        dim3 dimGrid(block_x, block_y);
+
+        // Copy data from main memory to device memory
+        if (!copy && !pageable) {
+            checkCudaErrors(cudaEventRecord(start, 0));
+        }
+        if (uvm) {
+            // do nothing
+        } else if (uvm_advise) {
+            checkCudaErrors(cudaMemAdvise(J_cuda, sizeof(float) * size_I, cudaMemAdviseSetPreferredLocation, device));
+        } else if (uvm_prefetch) {
+            checkCudaErrors(cudaMemPrefetchAsync(J_cuda, sizeof(float) * size_I, device));
+        } else if (uvm_prefetch_advise) {
+            checkCudaErrors(cudaMemAdvise(J_cuda, sizeof(float) * size_I, cudaMemAdviseSetPreferredLocation, device));
+            checkCudaErrors(cudaMemPrefetchAsync(J_cuda, sizeof(float) * size_I, device));
+        } else if (copy || pageable) {
+            if (is_barrier && pageable) {
+                int sval;
+                sem_post(sem);
+                sem_getvalue(sem, &sval);
+                while (sval == 1) {
+                    sem_getvalue(sem, &sval);
+                }
+                printf("[Barrier] Copying starts\n");
+            }
+            checkCudaErrors(cudaEventRecord(start, 0));
+            checkCudaErrors(cudaMemcpy(J_cuda, J, sizeof(float) * size_I, cudaMemcpyHostToDevice));
+        }
+        checkCudaErrors(cudaEventRecord(stop, 0));
+        checkCudaErrors(cudaEventSynchronize(stop));
+        checkCudaErrors(cudaEventElapsedTime(&elapsed, start, stop));
+        transferTime += elapsed * 1.e-3;
+
+        // (taeklim): Waiting for the other apps finishes the initialization
+        if (is_barrier && uvm) {
+            int sval;
+            sem_post(sem);
+            sem_getvalue(sem, &sval);
+            while (sval == 1) {
+                sem_getvalue(sem, &sval);
+            }
+            printf("[Barrier] Kernel starts\n");
+        }
+
+        // Run kernels
+        checkCudaErrors(cudaEventRecord(start, 0));
+        srad_cuda_1<<<dimGrid, dimBlock>>>(E_C, W_C, N_C, S_C, J_cuda, C_cuda, cols,
+                rows, q0sqr);
+        checkCudaErrors(cudaEventRecord(stop, 0));
+        checkCudaErrors(cudaEventSynchronize(stop));
+        checkCudaErrors(cudaEventElapsedTime(&elapsed, start, stop));
+        kernelTime += elapsed * 1.e-3;
+        CHECK_CUDA_ERROR();
+
+        checkCudaErrors(cudaEventRecord(start, 0));
+        srad_cuda_2<<<dimGrid, dimBlock>>>(E_C, W_C, N_C, S_C, J_cuda, C_cuda, cols,
+                rows, lambda, q0sqr);
+        checkCudaErrors(cudaEventRecord(stop, 0));
+        checkCudaErrors(cudaEventSynchronize(stop));
+        checkCudaErrors(cudaEventElapsedTime(&elapsed, start, stop));
+        kernelTime += elapsed * 1.e-3;
+        CHECK_CUDA_ERROR();
+
+        // Copy data from device memory to main memory
+        checkCudaErrors(cudaEventRecord(start, 0));
+
+        if (uvm) {
+            // do nothing
+        } else if (uvm_advise) {
+            checkCudaErrors(cudaMemAdvise(J_cuda, sizeof(float) * size_I, cudaMemAdviseSetPreferredLocation, cudaCpuDeviceId));
+        } else if (uvm_prefetch) {
+            checkCudaErrors(cudaMemPrefetchAsync(J_cuda, sizeof(float) * size_I, cudaCpuDeviceId));
+        } else if (uvm_prefetch_advise) {
+            checkCudaErrors(cudaMemAdvise(J_cuda, sizeof(float) * size_I, cudaMemAdviseSetPreferredLocation, cudaCpuDeviceId));
+            checkCudaErrors(cudaMemAdvise(J_cuda, sizeof(float) * size_I, cudaMemAdviseSetReadMostly, cudaCpuDeviceId));
+            checkCudaErrors(cudaMemPrefetchAsync(J_cuda, sizeof(float) * size_I, cudaCpuDeviceId));
+        } else if (pageable || copy) {
+            checkCudaErrors(cudaMemcpy(J, J_cuda, sizeof(float) * size_I, cudaMemcpyDeviceToHost));
+        }
+        checkCudaErrors(cudaEventRecord(stop, 0));
+        checkCudaErrors(cudaEventSynchronize(stop));
+        checkCudaErrors(cudaEventElapsedTime(&elapsed, start, stop));
+        transferTime += elapsed * 1.e-3;
+    }
 
     char atts[1024];
     sprintf(atts, "img:%d,speckle:%d,iter:%d", imageSize, speckleSize, iters);
@@ -386,55 +425,66 @@ float srad(ResultDatabase &resultDB, OptionParser &op, float* matrix, int imageS
     resultDB.AddResult("srad_total_time", atts, "sec", kernelTime + transferTime);
     resultDB.AddResult("srad_parity", atts, "N", transferTime / kernelTime);
     resultDB.AddOverall("Time", "sec", kernelTime+transferTime);
+    ofile << bench_name << ", " << kernelTime + transferTime << ", " << endl;
 
-  string outfile = op.getOptionString("outputFile");
-  if (!outfile.empty()) {
-      // Printing output
-      if (!op.getOptionBool("quiet")) {
-        printf("Writing output to %s\n", outfile.c_str());
-      }
-      FILE *fp = NULL;
-      fp = fopen(outfile.c_str(), "w");
-      if (!fp) {
-          printf("Error: Unable to write to file %s\n", outfile.c_str());
-      } else {
-          for (int i = 0; i < rows; i++) {
-              for (int j = 0; j < cols; j++) {
-                  fprintf(fp, "%.5f ", J[i * cols + j]);
-              }
-              fprintf(fp, "\n");
-          }
-          fclose(fp);
-      }
-  }
-  // write results to validate with srad_gridsync
-  check = (float*) malloc(sizeof(float) * size_I);
-  assert(check);
-  for (int i = 0; i < rows; i++) {
-      for (int j = 0; j < cols; j++) {
-          check[i*cols+j] = J[i*cols+j];
-      }
-  }
+//    string outfile = op.getOptionString("outputFile");
+//    if (!outfile.empty()) {
+//        // Printing output
+//        if (!op.getOptionBool("quiet")) {
+//            printf("Writing output to %s\n", outfile.c_str());
+//        }
+//        FILE *fp = NULL;
+//        fp = fopen(outfile.c_str(), "w");
+//        if (!fp) {
+//            printf("Error: Unable to write to file %s\n", outfile.c_str());
+//        } else {
+//            for (int i = 0; i < rows; i++) {
+//                for (int j = 0; j < cols; j++) {
+//                    fprintf(fp, "%.5f ", J[i * cols + j]);
+//                }
+//                fprintf(fp, "\n");
+//            }
+//            fclose(fp);
+//        }
+//    }
+    // write results to validate with srad_gridsync
+    check = (float*) malloc(sizeof(float) * size_I);
+    assert(check);
+    for (int i = 0; i < rows; i++) {
+        for (int j = 0; j < cols; j++) {
+            check[i*cols+j] = J[i*cols+j];
+        }
+    }
 
-  if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise) {
-    checkCudaErrors(cudaFree(C_cuda));
-    checkCudaErrors(cudaFree(J_cuda));
-    checkCudaErrors(cudaFree(E_C));
-    checkCudaErrors(cudaFree(W_C));
-    checkCudaErrors(cudaFree(N_C));
-    checkCudaErrors(cudaFree(S_C));
-  } else {
-    free(I);
-    free(J);
-    free(c);
-    checkCudaErrors(cudaFree(C_cuda));
-    checkCudaErrors(cudaFree(J_cuda));
-    checkCudaErrors(cudaFree(E_C));
-    checkCudaErrors(cudaFree(W_C));
-    checkCudaErrors(cudaFree(N_C));
-    checkCudaErrors(cudaFree(S_C));
-  }
-  return kernelTime;
+    if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise) {
+        checkCudaErrors(cudaFree(C_cuda));
+        checkCudaErrors(cudaFree(J_cuda));
+        checkCudaErrors(cudaFree(E_C));
+        checkCudaErrors(cudaFree(W_C));
+        checkCudaErrors(cudaFree(N_C));
+        checkCudaErrors(cudaFree(S_C));
+    } else if (copy) {
+        //cudaFreeHost(I);
+        cudaFreeHost(J);
+        cudaFreeHost(c);
+        checkCudaErrors(cudaFree(C_cuda));
+        checkCudaErrors(cudaFree(J_cuda));
+        checkCudaErrors(cudaFree(E_C));
+        checkCudaErrors(cudaFree(W_C));
+        checkCudaErrors(cudaFree(N_C));
+        checkCudaErrors(cudaFree(S_C));
+    } else if (pageable) {
+        free(I);
+        free(J);
+        free(c);
+        checkCudaErrors(cudaFree(C_cuda));
+        checkCudaErrors(cudaFree(J_cuda));
+        checkCudaErrors(cudaFree(E_C));
+        checkCudaErrors(cudaFree(W_C));
+        checkCudaErrors(cudaFree(N_C));
+        checkCudaErrors(cudaFree(S_C));
+    }
+    return kernelTime;
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -454,6 +504,8 @@ float srad(ResultDatabase &resultDB, OptionParser &op, float* matrix, int imageS
 
 float srad_gridsync(ResultDatabase &resultDB, OptionParser &op, float* matrix, int imageSize, int speckleSize, int iters) {
     const bool uvm = op.getOptionBool("uvm");
+    const bool copy = op.getOptionBool("copy");
+    const bool pageable = op.getOptionBool("pageable");
     const bool uvm_advise = op.getOptionBool("uvm-advise");
     const bool uvm_prefetch = op.getOptionBool("uvm-prefetch");
     const bool uvm_prefetch_advise = op.getOptionBool("uvm-prefetch-advise");
@@ -492,7 +544,10 @@ float srad_gridsync(ResultDatabase &resultDB, OptionParser &op, float* matrix, i
   if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise) {
     checkCudaErrors(cudaMallocManaged((void **)&J, sizeof(float) * size_I));
     checkCudaErrors(cudaMallocManaged((void **)&c, sizeof(float) * size_I));
-  } else {
+  } else if (copy) {
+    checkCudaErrors(cudaMallocHost((void **)&J, sizeof(float) * size_I));
+    checkCudaErrors(cudaMallocHost((void **)&c, sizeof(float) * size_I));
+  } else if (pageable) {
     I = (float *)malloc(size_I * sizeof(float));
     assert(I);
     J = (float *)malloc(size_I * sizeof(float));
@@ -509,7 +564,7 @@ float srad_gridsync(ResultDatabase &resultDB, OptionParser &op, float* matrix, i
     checkCudaErrors(cudaMallocManaged((void **)&W_C, sizeof(float) * size_I));
     checkCudaErrors(cudaMallocManaged((void **)&S_C, sizeof(float) * size_I));
     checkCudaErrors(cudaMallocManaged((void **)&N_C, sizeof(float) * size_I));
-  } else {
+  } else if (copy || pageable) {
     checkCudaErrors(cudaMalloc((void **)&J_cuda, sizeof(float) * size_I));
     checkCudaErrors(cudaMalloc((void **)&C_cuda, sizeof(float) * size_I));
     checkCudaErrors(cudaMalloc((void **)&E_C, sizeof(float) * size_I));
@@ -521,7 +576,7 @@ float srad_gridsync(ResultDatabase &resultDB, OptionParser &op, float* matrix, i
   // Generate a random matrix
   if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise) {
     I = matrix;
-  } else {
+  } else if (pageable || copy) {
     memcpy(I, matrix, rows*cols*sizeof(float));
   }
 
@@ -550,7 +605,9 @@ float srad_gridsync(ResultDatabase &resultDB, OptionParser &op, float* matrix, i
     dim3 dimGrid(block_x, block_y);
 
     // Copy data from main memory to device memory
-    checkCudaErrors(cudaEventRecord(start, 0));
+    if (!pageable && !copy) {
+        checkCudaErrors(cudaEventRecord(start, 0));
+    }
     // timing incorrect for page fault
     // J_cuda = J;
     // C_cuda = c;
@@ -563,8 +620,9 @@ float srad_gridsync(ResultDatabase &resultDB, OptionParser &op, float* matrix, i
     } else if (uvm_prefetch_advise) {
       checkCudaErrors(cudaMemAdvise(J_cuda, sizeof(float) * size_I, cudaMemAdviseSetPreferredLocation, device));
       checkCudaErrors(cudaMemPrefetchAsync(J_cuda, sizeof(float) * size_I, device));
-    } else {
-      checkCudaErrors(cudaMemcpy(J_cuda, J, sizeof(float) * size_I, cudaMemcpyHostToDevice));
+    } else if (copy || pageable) {
+        checkCudaErrors(cudaEventRecord(start, 0));
+        checkCudaErrors(cudaMemcpy(J_cuda, J, sizeof(float) * size_I, cudaMemcpyHostToDevice));
     }
     checkCudaErrors(cudaEventRecord(stop, 0));
     checkCudaErrors(cudaEventSynchronize(stop));
@@ -607,7 +665,7 @@ float srad_gridsync(ResultDatabase &resultDB, OptionParser &op, float* matrix, i
         checkCudaErrors(cudaFree(N_C));
         checkCudaErrors(cudaFree(S_C));
       }
-      else {
+      else if (pageable) {
         checkCudaErrors(cudaFree(C_cuda));
         checkCudaErrors(cudaFree(J_cuda));
         checkCudaErrors(cudaFree(E_C));
@@ -618,6 +676,16 @@ float srad_gridsync(ResultDatabase &resultDB, OptionParser &op, float* matrix, i
         free(I);
         free(J);
         free(c);
+      } else if (copy) {
+        checkCudaErrors(cudaFree(C_cuda));
+        checkCudaErrors(cudaFree(J_cuda));
+        checkCudaErrors(cudaFree(E_C));
+        checkCudaErrors(cudaFree(W_C));
+        checkCudaErrors(cudaFree(N_C));
+        checkCudaErrors(cudaFree(S_C));
+        //cudaFreeHost(I);
+        cudaFreeHost(J);
+        cudaFreeHost(c);
       }
     return FLT_MAX;
     }                                                                     
@@ -635,7 +703,7 @@ float srad_gridsync(ResultDatabase &resultDB, OptionParser &op, float* matrix, i
       checkCudaErrors(cudaMemAdvise(J, sizeof(float) * size_I, cudaMemAdviseSetPreferredLocation, cudaCpuDeviceId));
       checkCudaErrors(cudaMemAdvise(J, sizeof(float) * size_I, cudaMemAdviseSetReadMostly, cudaCpuDeviceId));
       checkCudaErrors(cudaMemPrefetchAsync(J, sizeof(float) * size_I, cudaCpuDeviceId));
-    } else {
+    } else if (pageable || copy) {
       checkCudaErrors(cudaMemcpy(J, J_cuda, sizeof(float) * size_I, cudaMemcpyDeviceToHost));
     }
     checkCudaErrors(cudaEventRecord(stop, 0));
@@ -668,10 +736,20 @@ float srad_gridsync(ResultDatabase &resultDB, OptionParser &op, float* matrix, i
     CUDA_SAFE_CALL(cudaFree(W_C));
     CUDA_SAFE_CALL(cudaFree(N_C));
     CUDA_SAFE_CALL(cudaFree(S_C));
-  } else {
+  } else if (pageable) {
     free(I);
     free(J);
     free(c);
+    CUDA_SAFE_CALL(cudaFree(C_cuda));
+    CUDA_SAFE_CALL(cudaFree(J_cuda));
+    CUDA_SAFE_CALL(cudaFree(E_C));
+    CUDA_SAFE_CALL(cudaFree(W_C));
+    CUDA_SAFE_CALL(cudaFree(N_C));
+    CUDA_SAFE_CALL(cudaFree(S_C));
+  } else if (copy) {
+    cudaFreeHost(I);
+    cudaFreeHost(J);
+    cudaFreeHost(c);
     CUDA_SAFE_CALL(cudaFree(C_cuda));
     CUDA_SAFE_CALL(cudaFree(J_cuda));
     CUDA_SAFE_CALL(cudaFree(E_C));

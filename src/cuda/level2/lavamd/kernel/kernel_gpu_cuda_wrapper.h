@@ -22,7 +22,9 @@ void kernel_gpu_cuda_wrapper(	par_str parms_cpu,
 								fp* qv_cpu,
 								FOUR_VECTOR* fv_cpu,
                                 ResultDatabase &resultDB,
-								OptionParser &op);
+								OptionParser &op,
+                ofstream &ofile,
+                sem_t *sem);
 
 #ifdef __cplusplus
 }

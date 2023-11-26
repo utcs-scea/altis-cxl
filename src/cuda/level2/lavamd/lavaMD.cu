@@ -36,7 +36,8 @@ void addBenchmarkSpecOptions(OptionParser &op) {
 /// <param name="op">	   	[in,out] The operation. </param>
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-void RunBenchmark(ResultDatabase &resultDB, OptionParser &op) {
+//void RunBenchmark(ResultDatabase &resultDB, OptionParser &op) {
+void RunBenchmark(ResultDatabase &resultDB, OptionParser &op, ofstream &ofile, sem_t *sem) {
     printf("Running LavaMD\n");
 
     bool quiet = op.getOptionBool("quiet");
@@ -56,7 +57,7 @@ void RunBenchmark(ResultDatabase &resultDB, OptionParser &op) {
     int passes = op.getOptionInt("passes");
     for (int i = 0; i < passes; i++) {
         if (!quiet) { printf("Pass %d: ", i); }
-        runTest(resultDB, op, boxes1d);
+        runTest(resultDB, op, boxes1d, ofile, sem);
         if (!quiet) { printf("Done.\n"); }
     }
 }
@@ -71,8 +72,13 @@ void RunBenchmark(ResultDatabase &resultDB, OptionParser &op) {
 /// <param name="boxes1d"> 	The boxes 1d. </param>
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-void runTest(ResultDatabase &resultDB, OptionParser &op, int boxes1d) {
+void runTest(ResultDatabase &resultDB, OptionParser &op, int boxes1d, ofstream &ofile, 
+        sem_t *sem) {
     bool uvm = op.getOptionBool("uvm");
+    bool uvm_prefetch = op.getOptionBool("uvm-prefetch");
+    bool copy = op.getOptionBool("copy");
+    bool pageable = op.getOptionBool("pageable");
+    const bool is_barrier = op.getOptionBool("sem");
     // random generator seed set to random value - time in this case
     srand(SEED);
 
@@ -103,10 +109,12 @@ void runTest(ResultDatabase &resultDB, OptionParser &op, int boxes1d) {
     dim_cpu.box_mem = dim_cpu.number_boxes * sizeof(box_str);
 
     // allocate boxes
-    if (uvm) {
+    if (uvm || uvm_prefetch) {
         checkCudaErrors(cudaMallocManaged(&box_cpu, dim_cpu.box_mem));
-    }
-    else {
+    } else if (copy) {
+        checkCudaErrors(cudaMallocHost(&box_cpu, dim_cpu.box_mem));
+        assert(box_cpu);
+    } else {
         box_cpu = (box_str *)malloc(dim_cpu.box_mem);
         assert(box_cpu);
     }
@@ -168,10 +176,12 @@ void runTest(ResultDatabase &resultDB, OptionParser &op, int boxes1d) {
     } // home boxes in z direction
 
     // input (distances)
-    if (uvm) {
+    if (uvm || uvm_prefetch) {
         checkCudaErrors(cudaMallocManaged(&rv_cpu, dim_cpu.space_mem));
-    }
-    else {
+    } else if (copy) {
+        checkCudaErrors(cudaMallocHost(&rv_cpu, dim_cpu.space_mem));
+        assert(rv_cpu);
+    } else {
         rv_cpu = (FOUR_VECTOR*)malloc(dim_cpu.space_mem);
         assert(rv_cpu);
     }
@@ -184,10 +194,12 @@ void runTest(ResultDatabase &resultDB, OptionParser &op, int boxes1d) {
     }
 
     // input (charge)
-    if (uvm) {
+    if (uvm || uvm_prefetch) {
         checkCudaErrors(cudaMallocManaged(&qv_cpu, dim_cpu.space_mem2));
-    }
-    else {
+    } else if (copy) {
+        checkCudaErrors(cudaMallocHost(&qv_cpu, dim_cpu.space_mem2));
+        assert(qv_cpu);
+    } else {
         qv_cpu = (fp*)malloc(dim_cpu.space_mem2);
         assert(qv_cpu);
     }
@@ -197,8 +209,11 @@ void runTest(ResultDatabase &resultDB, OptionParser &op, int boxes1d) {
     }
 
     // output (forces)
-    if (uvm) {
+    if (uvm || uvm_prefetch) {
         checkCudaErrors(cudaMallocManaged(&fv_cpu, dim_cpu.space_mem));
+    } else if (copy) {
+        checkCudaErrors(cudaMallocHost(&fv_cpu, dim_cpu.space_mem));
+        assert(fv_cpu);
     } else {
         fv_cpu = (FOUR_VECTOR*)malloc(dim_cpu.space_mem);
         assert(fv_cpu);
@@ -218,7 +233,8 @@ void runTest(ResultDatabase &resultDB, OptionParser &op, int boxes1d) {
             qv_cpu,
             fv_cpu,
             resultDB,
-            op);
+            op,
+            ofile, sem);
 
     string outfile = op.getOptionString("outputFile");
     if (outfile != "") {
@@ -230,11 +246,16 @@ void runTest(ResultDatabase &resultDB, OptionParser &op, int boxes1d) {
         fclose(fptr);
     }
 
-    if (uvm) {
+    if (uvm || uvm_prefetch) {
         checkCudaErrors(cudaFree(rv_cpu));
         checkCudaErrors(cudaFree(qv_cpu));
         checkCudaErrors(cudaFree(fv_cpu));
         checkCudaErrors(cudaFree(box_cpu));
+    } else if (copy) {
+        checkCudaErrors(cudaFreeHost(rv_cpu));
+        checkCudaErrors(cudaFreeHost(qv_cpu));
+        checkCudaErrors(cudaFreeHost(fv_cpu));
+        checkCudaErrors(cudaFreeHost(box_cpu));
     } else {
         free(rv_cpu);
         free(qv_cpu);

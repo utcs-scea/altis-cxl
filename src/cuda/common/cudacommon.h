@@ -21,6 +21,18 @@
 #include <cuda.h>
 #include <cuda_runtime_api.h>
 
+#include <stdlib.h>
+#include <fcntl.h>
+#include <semaphore.h>
+#include <unistd.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <errno.h>
+
+#define SEM_NAME "/semaphore_example"
+#define SEM_PERMS (S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP)
+#define INITIAL_VALUE 0
+
 #if defined __has_include
 #  if __has_include ("cuda_device_attr.h")
 #    include "cuda_device_attr.h"

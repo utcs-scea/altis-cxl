@@ -68,7 +68,7 @@ void addBenchmarkSpecOptions(OptionParser &op) {
 //
 // ****************************************************************************
 
-void RunBenchmark(ResultDatabase &resultDB, OptionParser &op) {
+void RunBenchmark(ResultDatabase &resultDB, OptionParser &op, ofstream &ofile, sem_t *sem) {
     cout << "Running BusSpeedReadback" << endl;
 
     const bool verbose = op.getOptionBool("verbose");

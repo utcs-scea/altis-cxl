@@ -453,7 +453,7 @@ void addBenchmarkSpecOptions(OptionParser &op) {
 /// <param name="op">	   	[in,out] The operation. </param>
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-void RunBenchmark(ResultDatabase &resultDB, OptionParser &op)
+void RunBenchmark(ResultDatabase &resultDB, OptionParser &op, ofstream &ofile, sem_t *sem)
 {
     printf("Running DWT2D\n");
     bool quiet      = op.getOptionBool("quiet");
@@ -468,6 +468,10 @@ void RunBenchmark(ResultDatabase &resultDB, OptionParser &op)
     bool writeVisual = op.getOptionBool("writeVisual"); //write output (subbands) in visual (tiled) order instead of linear
     string inputFile = op.getOptionString("inputFile");
     bool uvm = op.getOptionBool("uvm");
+    bool copy = op.getOptionBool("copy");
+    bool pageable = op.getOptionBool("pageable");
+    bool uvm_prefetch = op.getOptionBool("uvm-prefetch");
+
     if (inputFile.empty()) {
         int probSizes[4] = {48, 192, 8192, 2<<13};
         int pix = probSizes[op.getOptionInt("size")-1];
@@ -518,11 +522,15 @@ void RunBenchmark(ResultDatabase &resultDB, OptionParser &op)
     //load img source image
     if (uvm) {
         checkCudaErrors(cudaMallocManaged((void **)&d->srcImg, inputSize));
-    } else {
+    } else if (copy) {
         checkCudaErrors(cudaMallocHost((void **)&d->srcImg, inputSize));
+    } else if (pageable) {
+        d->srcImg = (unsigned char *)malloc(inputSize * sizeof(unsigned char));
     }
+
     if (getImg(d->srcFilename, d->srcImg, inputSize, quiet) == -1) 
         return;
+    printf("done loading img");
 
     int passes = op.getOptionInt("passes");
     for (int i = 0; i < passes; i++) {
@@ -554,9 +562,11 @@ void RunBenchmark(ResultDatabase &resultDB, OptionParser &op)
     //writeComponent(g_wave_cuda, 512000, ".g");
     //writeComponent(g_cuda, componentSize, ".g");
     //writeComponent(b_wave_cuda, componentSize, ".b");
-    if (uvm) {
+    if (uvm || uvm_prefetch) {
         checkCudaErrors(cudaFree(d->srcImg));
-    } else {
+    } else if (copy) {
         checkCudaErrors(cudaFreeHost(d->srcImg));
+    } else if (pageable) {
+        free(d->srcImg);
     }
 }

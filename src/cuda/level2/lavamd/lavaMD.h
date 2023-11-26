@@ -237,4 +237,4 @@ typedef struct dim_str
 /// <param name="boxes1d"> 	The boxes 1d. </param>
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-void runTest(ResultDatabase &resultDB, OptionParser &op, int boxes1d);
+void runTest(ResultDatabase &resultDB, OptionParser &op, int boxes1d, ofstream &ofile, sem_t *sem);

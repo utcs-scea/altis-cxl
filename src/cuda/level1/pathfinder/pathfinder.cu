@@ -23,7 +23,7 @@
 #define SEED 7
 
 void run(int borderCols, int smallBlockCol, int blockCols,
-         ResultDatabase &resultDB, OptionParser &op);
+         ResultDatabase &resultDB, OptionParser &op, ofstream &ofile, sem_t *sem);
 
 int rows, cols;
 int *data;
@@ -74,7 +74,7 @@ void addBenchmarkSpecOptions(OptionParser &op) {
 // add support for UVM
 //
 // ****************************************************************************
-void RunBenchmark(ResultDatabase &resultDB, OptionParser &op) {
+void RunBenchmark(ResultDatabase &resultDB, OptionParser &op, ofstream &ofile, sem_t *sem) {
   printf("Running Pathfinder\n");
   int device;
   cudaGetDevice(&device);
@@ -124,7 +124,7 @@ void RunBenchmark(ResultDatabase &resultDB, OptionParser &op) {
     if(!quiet) {
         printf("Pass %d: ", i);
     }
-    run(borderCols, smallBlockCol, blockCols, resultDB, op);
+    run(borderCols, smallBlockCol, blockCols, resultDB, op, ofile, sem);
     if(!quiet) {
         printf("Done.\n");
     }
@@ -142,6 +142,8 @@ void RunBenchmark(ResultDatabase &resultDB, OptionParser &op) {
 
 void init(OptionParser &op) {
   const bool uvm = op.getOptionBool("uvm");
+  const bool copy = op.getOptionBool("copy");
+  const bool pageable = op.getOptionBool("pageable");
   const bool uvm_advise = op.getOptionBool("uvm-advise");
   const bool uvm_prefetch = op.getOptionBool("uvm-prefetch");
   const bool uvm_prefetch_advise = op.getOptionBool("uvm-prefetch-advise");
@@ -149,15 +151,27 @@ void init(OptionParser &op) {
   if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise) {
     checkCudaErrors(cudaMallocManaged(&data, sizeof(int) * rows * cols));
     checkCudaErrors(cudaMallocManaged(&wall, sizeof(int *) * rows));
-    for (int n = 0; n < rows; n++) wall[n] = data + (int)cols * n;
-    // checkCudaErrors(cudaMallocManaged(&result, sizeof(int) * cols));
-  } else {
+    for (int n = 0; n < rows; n++)  {
+        wall[n] = data + (int)cols * n;
+    }
+    checkCudaErrors(cudaMallocManaged(&result, sizeof(int) * cols));
+  } else if (copy) {
+      checkCudaErrors(cudaMallocHost(&data, sizeof(int) * rows * cols));
+      checkCudaErrors(cudaMallocHost(&wall, sizeof(int *) * rows));
+    for (int n = 0; n < rows; n++) {
+        wall[n] = data + (int)cols * n;
+    }
+    checkCudaErrors(cudaMallocHost(&result, sizeof(int) * cols));
+  } else if (pageable) {
     data = new int[rows * cols];
     wall = new int *[rows];
-    for (int n = 0; n < rows; n++) wall[n] = data + (int)cols * n;
+    for (int n = 0; n < rows; n++) { 
+        wall[n] = data + (int)cols * n;
+    }
     result = new int[cols];
   }
-
+  printf("after wall\n");
+  fflush(stdout);
   srand(SEED);
 
   for (int i = 0; i < rows; i++) {
@@ -165,12 +179,15 @@ void init(OptionParser &op) {
       wall[i][j] = rand() % 10;
     }
   }
-  string outfile = op.getOptionString("outputFile");
-  if (outfile != "") {
-    std::fstream fs;
-    fs.open(outfile.c_str(), std::fstream::in);
-    fs.close();
-  }
+  printf("before outputfile\n");
+  fflush(stdout);
+
+//  string outfile = op.getOptionString("outputFile");
+//  if (outfile != "") {
+//    std::fstream fs;
+//    fs.open(outfile.c_str(), std::fstream::in);
+//    fs.close();
+//  }
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -378,13 +395,18 @@ int calc_path(int *gpuWall, int *gpuResult[2], int rows,
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 void run(int borderCols, int smallBlockCol, int blockCols,
-         ResultDatabase &resultDB, OptionParser &op) {
+         ResultDatabase &resultDB, OptionParser &op, ofstream &ofile, sem_t *sem) {
   // initialize data
   init(op);
   const bool uvm = op.getOptionBool("uvm");
+  const bool copy = op.getOptionBool("copy");
+  const bool pageable = op.getOptionBool("pageable");
+
   const bool uvm_advise = op.getOptionBool("uvm-advise");
   const bool uvm_prefetch = op.getOptionBool("uvm-prefetch");
   const bool uvm_prefetch_advise = op.getOptionBool("uvm-prefetch-advise");
+  const bool is_barrier = op.getOptionBool("sem");
+  string bench_name = op.getOptionString("bench");
 
   int *gpuWall, *gpuResult[2];
   int size = rows * cols;
@@ -393,8 +415,10 @@ void run(int borderCols, int smallBlockCol, int blockCols,
     gpuResult[0] = data;
     checkCudaErrors(cudaMallocManaged((void **)&gpuResult[1], sizeof(int) * cols));
     checkCudaErrors(cudaMallocManaged((void **)&gpuWall, sizeof(int) * (size - cols)));
+    memset(gpuResult[1], 1,  cols * sizeof(int));
+    memset(gpuWall, 1,  (size - cols) * sizeof(int));
     // gpuWall = data + cols;
-  } else {
+  } else if (copy || pageable) {
     checkCudaErrors(cudaMalloc((void **)&gpuResult[0], sizeof(int) * cols));
     checkCudaErrors(cudaMalloc((void **)&gpuResult[1], sizeof(int) * cols));
     checkCudaErrors(cudaMalloc((void **)&gpuWall, sizeof(int) * (size - cols)));
@@ -408,36 +432,50 @@ void run(int borderCols, int smallBlockCol, int blockCols,
   double transferTime = 0.;
   double kernelTime = 0;
 
-  checkCudaErrors(cudaEventRecord(start, 0));
 
   if (uvm) {
-    // do nothing
+      checkCudaErrors(cudaEventRecord(start, 0));
+      // do nothing
   } else if (uvm_advise) {
-    checkCudaErrors(cudaMemAdvise(gpuResult[0], sizeof(int) * cols, cudaMemAdviseSetPreferredLocation, device_id));
-    checkCudaErrors(cudaMemAdvise(gpuWall, sizeof(int) * (size - cols), cudaMemAdviseSetPreferredLocation, device_id));
-    checkCudaErrors(cudaMemAdvise(gpuWall, sizeof(int) * (size - cols), cudaMemAdviseSetReadMostly, device_id));
+      checkCudaErrors(cudaEventRecord(start, 0));
+      checkCudaErrors(cudaMemAdvise(gpuResult[0], sizeof(int) * cols, cudaMemAdviseSetPreferredLocation, device_id));
+      checkCudaErrors(cudaMemAdvise(gpuWall, sizeof(int) * (size - cols), cudaMemAdviseSetPreferredLocation, device_id));
+      checkCudaErrors(cudaMemAdvise(gpuWall, sizeof(int) * (size - cols), cudaMemAdviseSetReadMostly, device_id));
   } else if (uvm_prefetch) {
-    checkCudaErrors(cudaMemPrefetchAsync(gpuResult[0], sizeof(int) * cols, device_id));
-    cudaStream_t s1;
-    checkCudaErrors(cudaStreamCreate(&s1));
-    checkCudaErrors(cudaMemPrefetchAsync(gpuWall, sizeof(int) * (size - cols), device_id, s1));
-    checkCudaErrors(cudaStreamDestroy(s1));
+      checkCudaErrors(cudaEventRecord(start, 0));
+      checkCudaErrors(cudaMemPrefetchAsync(gpuResult[0], sizeof(int) * cols, device_id));
+      cudaStream_t s1;
+      checkCudaErrors(cudaStreamCreate(&s1));
+      checkCudaErrors(cudaMemPrefetchAsync(gpuWall, sizeof(int) * (size - cols), device_id, s1));
+      checkCudaErrors(cudaStreamDestroy(s1));
   } else if (uvm_prefetch_advise) {
-    checkCudaErrors(cudaMemAdvise(gpuResult[0], sizeof(int) * cols, cudaMemAdviseSetPreferredLocation, device_id));
-    checkCudaErrors(cudaMemAdvise(gpuWall, sizeof(int) * (size - cols), cudaMemAdviseSetPreferredLocation, device_id));
-    checkCudaErrors(cudaMemAdvise(gpuWall, sizeof(int) * (size - cols), cudaMemAdviseSetReadMostly, device_id));
-    checkCudaErrors(cudaMemPrefetchAsync(gpuResult[0], sizeof(int) * cols, device_id));
-    cudaStream_t s1;
-    checkCudaErrors(cudaStreamCreate(&s1));
-    checkCudaErrors(cudaMemPrefetchAsync(gpuWall, sizeof(int) * (size - cols), device_id, s1));
-    checkCudaErrors(cudaStreamDestroy(s1));
-  } else {
-    checkCudaErrors(cudaMemcpy(gpuResult[0], data, sizeof(int) * cols,
-                            cudaMemcpyHostToDevice));
-  
-    checkCudaErrors(cudaMemcpy(gpuWall, data + cols,
-                            sizeof(int) * (size - cols),
-                            cudaMemcpyHostToDevice));
+      checkCudaErrors(cudaEventRecord(start, 0));
+      checkCudaErrors(cudaMemAdvise(gpuResult[0], sizeof(int) * cols, cudaMemAdviseSetPreferredLocation, device_id));
+      checkCudaErrors(cudaMemAdvise(gpuWall, sizeof(int) * (size - cols), cudaMemAdviseSetPreferredLocation, device_id));
+      checkCudaErrors(cudaMemAdvise(gpuWall, sizeof(int) * (size - cols), cudaMemAdviseSetReadMostly, device_id));
+      checkCudaErrors(cudaMemPrefetchAsync(gpuResult[0], sizeof(int) * cols, device_id));
+      cudaStream_t s1;
+      checkCudaErrors(cudaStreamCreate(&s1));
+      checkCudaErrors(cudaMemPrefetchAsync(gpuWall, sizeof(int) * (size - cols), device_id, s1));
+      checkCudaErrors(cudaStreamDestroy(s1));
+  } else if (copy || pageable) {
+      // (taeklim): Waiting for the other apps before copying
+      if (is_barrier && pageable) {
+          int sval;
+          sem_post(sem);
+          sem_getvalue(sem, &sval);
+          while (sval == 1) {
+              sem_getvalue(sem, &sval);
+          }
+          printf("[Barrier] Copying starts\n");
+      }
+      checkCudaErrors(cudaEventRecord(start, 0));
+      checkCudaErrors(cudaMemcpy(gpuResult[0], data, sizeof(int) * cols,
+                  cudaMemcpyHostToDevice));
+
+      checkCudaErrors(cudaMemcpy(gpuWall, data + cols,
+                  sizeof(int) * (size - cols),
+                  cudaMemcpyHostToDevice));
   }
 
   checkCudaErrors(cudaEventRecord(stop, 0));
@@ -446,6 +484,17 @@ void run(int borderCols, int smallBlockCol, int blockCols,
   transferTime += elapsedTime * 1.e-3;  // convert to seconds
 
   int instances = op.getOptionInt("instances");
+
+  // (taeklim): Waiting for the other apps finishes the initialization
+  if (is_barrier && uvm) {
+      int sval;
+      sem_post(sem);
+      sem_getvalue(sem, &sval);
+      while (sval == 1) {
+          sem_getvalue(sem, &sval);
+      }
+      printf("[Barrier] Kernel starts\n");
+  }
 
 #ifdef HYPERQ
   double hyperqKernelTime = 0;
@@ -473,7 +522,7 @@ void run(int borderCols, int smallBlockCol, int blockCols,
     checkCudaErrors(cudaMemAdvise(gpuResult[final_ret], sizeof(int) * cols, cudaMemAdviseSetPreferredLocation, cudaCpuDeviceId));
     checkCudaErrors(cudaMemAdvise(gpuResult[final_ret], sizeof(int) * cols, cudaMemAdviseSetReadMostly, cudaCpuDeviceId));
     checkCudaErrors(cudaMemPrefetchAsync(result, sizeof(int) * cols, cudaCpuDeviceId));
-  } else {
+  } else if (copy || pageable) {
     checkCudaErrors(cudaMemcpy(result, gpuResult[final_ret],
                     sizeof(int) * cols, cudaMemcpyDeviceToHost));
   }
@@ -484,21 +533,21 @@ void run(int borderCols, int smallBlockCol, int blockCols,
   transferTime += elapsedTime * 1.e-3;  // convert to seconds
 
   /// <summary>	Output the results to a file. </summary>
-  string outfile = op.getOptionString("outputFile");
-  if (!outfile.empty()) {
-    std::fstream fs;
-    fs.open(outfile.c_str(), std::fstream::app);
-    fs << "***DATA***" << std::endl;
-    for (int i = 0; i < cols; i++) {
-      fs << data[i] << " ";
-    }
-    fs << std::endl;
-    fs << "***RESULT***" << std::endl;
-    for (int i = 0; i < cols; i++) {
-      fs << result[i] << " ";
-    }
-    fs << std::endl;
-  }
+//  string outfile = op.getOptionString("outputFile");
+//  if (!outfile.empty()) {
+//    std::fstream fs;
+//    fs.open(outfile.c_str(), std::fstream::app);
+//    fs << "***DATA***" << std::endl;
+//    for (int i = 0; i < cols; i++) {
+//      fs << data[i] << " ";
+//    }
+//    fs << std::endl;
+//    fs << "***RESULT***" << std::endl;
+//    for (int i = 0; i < cols; i++) {
+//      fs << result[i] << " ";
+//    }
+//    fs << std::endl;
+//  }
 
   ////////////////////////////////////////////////////////////////////////////////////////////////////
   /// <summary>	cleanup. </summary>
@@ -511,11 +560,15 @@ void run(int borderCols, int smallBlockCol, int blockCols,
   cudaFree(gpuResult[0]);
   cudaFree(gpuResult[1]);
 
-if (!uvm && !uvm_advise && !uvm_prefetch && !uvm_prefetch_advise) {
-  delete[] data;
-  delete[] wall;
-  delete[] result;
-}
+  if (!uvm && !uvm_advise && !uvm_prefetch && !uvm_prefetch_advise && !copy) {
+      delete[] data;
+      delete[] wall;
+      delete[] result;
+  } else if (copy) {
+      cudaFreeHost(data);
+      cudaFreeHost(wall);
+      cudaFreeHost(data);
+  }
 
   string atts = toString(rows) + "x" + toString(cols);
 #ifdef HYPERQ
@@ -536,4 +589,6 @@ if (!uvm && !uvm_advise && !uvm_prefetch && !uvm_prefetch_advise) {
 
 #endif
   resultDB.AddOverall("Time", "sec", kernelTime+transferTime);
+  
+  ofile << bench_name << ", " << kernelTime + transferTime << ", " << endl;
 }

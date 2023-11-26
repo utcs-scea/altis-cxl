@@ -25,7 +25,7 @@
 
 int max_rows, max_cols, penalty;
 
-void runTest(ResultDatabase &resultDB, OptionParser &op);
+void runTest(ResultDatabase &resultDB, OptionParser &op, ofstream &ofile, sem_t *sem);
 
 /// <summary>	The blosum 62[24][24]. </summary>
 int blosum62[24][24] = {{4,  -1, -2, -2, 0, -1, -1, 0, -2, -1, -1, -1,
@@ -106,7 +106,8 @@ void addBenchmarkSpecOptions(OptionParser &op) {
 /// <param name="op">	   	[in,out] the options parser / parameter database. </param>
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-void RunBenchmark(ResultDatabase &resultDB, OptionParser &op) {
+//void RunBenchmark(ResultDatabase &resultDB, OptionParser &op) {
+void RunBenchmark(ResultDatabase &resultDB, OptionParser &op, ofstream &ofile, sem_t *sem) {
   printf("Running Needleman-Wunsch\n");
 
   int device;
@@ -152,7 +153,7 @@ void RunBenchmark(ResultDatabase &resultDB, OptionParser &op) {
       }
       max_rows = dim;
       max_cols = dim;
-      runTest(resultDB, op);
+      runTest(resultDB, op, ofile, sem);
       if(!quiet) {
           printf("Done.\n");
       }
@@ -168,20 +169,35 @@ void RunBenchmark(ResultDatabase &resultDB, OptionParser &op) {
 /// <param name="op">	   	[in,out] The operation. </param>
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-void runTest(ResultDatabase &resultDB, OptionParser &op) {
+void runTest(ResultDatabase &resultDB, OptionParser &op, ofstream &ofile, sem_t *sem) {
   bool uvm = op.getOptionBool("uvm");
+  bool uvm_prefetch = op.getOptionBool("uvm-prefetch");
+  bool copy = op.getOptionBool("copy");
   bool quiet = op.getOptionBool("quiet");
+  bool pageable = op.getOptionBool("pageable");
   int *input_itemsets, *output_itemsets, *referrence;
   int *matrix_cuda, *referrence_cuda;
   int size;
+  int device = 0;
+  checkCudaErrors(cudaGetDevice(&device));
+  const bool is_barrier = op.getOptionBool("sem");
+  string bench_name = op.getOptionString("bench");
 
   max_rows = max_rows + 1;
   max_cols = max_cols + 1;
   
-  if (uvm) {
+  if (uvm || uvm_prefetch) {
     checkCudaErrors(cudaMallocManaged(&referrence, max_rows * max_cols * sizeof(int)));
     checkCudaErrors(cudaMallocManaged(&input_itemsets, max_rows * max_cols * sizeof(int)));
-  } else {
+  } else if (copy) {
+    checkCudaErrors(cudaMallocHost(&referrence, max_rows * max_cols * sizeof(int)));
+    //checkCudaErrors(cudaHostAlloc(&referrence, max_rows * max_cols * sizeof(int), cudaHostAllocDefault));
+    assert(referrence);
+    checkCudaErrors(cudaMallocHost(&input_itemsets, max_rows * max_cols * sizeof(int)));
+    assert(input_itemsets);
+    checkCudaErrors(cudaMallocHost(&output_itemsets, max_rows * max_cols * sizeof(int)));
+    assert(output_itemsets);
+  } else if (pageable) {
     referrence = (int *)malloc(max_rows * max_cols * sizeof(int));
     assert(referrence);
     input_itemsets = (int *)malloc(max_rows * max_cols * sizeof(int));
@@ -221,12 +237,12 @@ void runTest(ResultDatabase &resultDB, OptionParser &op) {
 
   size = max_cols * max_rows;
 
-  if (uvm) {
+  if (uvm || uvm_prefetch) {
     // Do nothing
-  } else {
+  } else if (copy || pageable) {
     checkCudaErrors(cudaMalloc((void **)&referrence_cuda, sizeof(int) * size));
     checkCudaErrors(cudaMalloc((void **)&matrix_cuda, sizeof(int) * size));
-  }
+  } 
 
   cudaEvent_t start, stop;
   cudaEventCreate(&start);
@@ -234,18 +250,39 @@ void runTest(ResultDatabase &resultDB, OptionParser &op) {
   float elapsedTime;
   double transferTime = 0.;
   double kernelTime = 0;
+  double totalTime = 0;
 
-  cudaEventRecord(start, 0);
   // Notice that here we used demand paging so no cpy time included, could also use HyperQ
   if (uvm) {
+      cudaEventRecord(start, 0);
     referrence_cuda = referrence;
     matrix_cuda = input_itemsets;
-  } else {
+  } else if (uvm_prefetch) {
+      cudaEventRecord(start, 0);
+    referrence_cuda = referrence;
+    matrix_cuda = input_itemsets;
+      checkCudaErrors(cudaMemPrefetchAsync(referrence_cuda, sizeof(int) * size , device));
+      cudaStream_t s1;
+      checkCudaErrors(cudaStreamCreate(&s1));
+      checkCudaErrors(cudaMemPrefetchAsync(matrix_cuda, sizeof(int) * size , device, s1));
+      checkCudaErrors(cudaStreamDestroy(s1));
+  } else if (copy || pageable) {
+    if (is_barrier && pageable) {
+        int sval;
+        sem_post(sem);
+        sem_getvalue(sem, &sval);
+        while (sval == 1) {
+            sem_getvalue(sem, &sval);
+        }
+        printf("[Barrier] Copying starts\n");
+    }
+    cudaEventRecord(start, 0);
     checkCudaErrors(cudaMemcpy(referrence_cuda, referrence, sizeof(int) * size,
             cudaMemcpyHostToDevice));
     checkCudaErrors(cudaMemcpy(matrix_cuda, input_itemsets, sizeof(int) * size,
             cudaMemcpyHostToDevice));
-  }
+  } 
+  printf("Done copying...\n");
   cudaEventRecord(stop, 0);
   cudaEventSynchronize(stop);
   cudaEventElapsedTime(&elapsedTime, start, stop);
@@ -255,114 +292,143 @@ void runTest(ResultDatabase &resultDB, OptionParser &op) {
   dim3 dimBlock(BLOCK_SIZE, 1);
   int block_width = (max_cols - 1) / BLOCK_SIZE;
 
+  // (taeklim): Waiting for the other apps finishes the initialization
+  if (is_barrier && uvm) {
+      int sval;
+      sem_post(sem);
+      sem_getvalue(sem, &sval);
+      while (sval == 1) {
+          sem_getvalue(sem, &sval);
+      }
+      printf("[Barrier] Kernel starts\n");
+  }
+  cudaEventRecord(start, 0);
   // process top-left matrix
   for (int i = 1; i <= block_width; i++) {
     dimGrid.x = i;
     dimGrid.y = 1;
-    cudaEventRecord(start, 0);
+    //cudaEventRecord(start, 0);
     needle_cuda_shared_1<<<dimGrid, dimBlock>>>(
             referrence_cuda, matrix_cuda, max_cols, penalty, i, block_width);
-    cudaEventRecord(stop, 0);
-    cudaEventSynchronize(stop);
-    cudaEventElapsedTime(&elapsedTime, start, stop);
-    kernelTime += elapsedTime * 1.e-3;
+    //cudaEventRecord(stop, 0);
+//    cudaEventSynchronize(stop);
+//    cudaEventElapsedTime(&elapsedTime, start, stop);
+//    kernelTime += elapsedTime * 1.e-3;
     CHECK_CUDA_ERROR();
   }
   // process bottom-right matrix
   for (int i = block_width - 1; i >= 1; i--) {
     dimGrid.x = i;
     dimGrid.y = 1;
-    cudaEventRecord(start, 0);
+//    cudaEventRecord(start, 0);
     needle_cuda_shared_2<<<dimGrid, dimBlock>>>(
         referrence_cuda, matrix_cuda, max_cols, penalty, i, block_width);
-    cudaEventRecord(stop, 0);
-    cudaEventSynchronize(stop);
-    cudaEventElapsedTime(&elapsedTime, start, stop);
-    kernelTime += elapsedTime * 1.e-3;
+//    cudaEventRecord(stop, 0);
+//    cudaEventSynchronize(stop);
+//    cudaEventElapsedTime(&elapsedTime, start, stop);
+//    kernelTime += elapsedTime * 1.e-3;
     CHECK_CUDA_ERROR();
   }
 
+  cudaEventRecord(stop, 0);
+  cudaEventSynchronize(stop);
+  cudaEventElapsedTime(&elapsedTime, start, stop);
+  kernelTime += elapsedTime * 1.e-3;
+
+  printf("Done kernel...\n");
+
   cudaEventRecord(start, 0);
-  if (uvm) {
+  if (uvm || uvm_prefetch) {
     output_itemsets = matrix_cuda;
     checkCudaErrors(cudaMemPrefetchAsync(output_itemsets, sizeof(int) * size, cudaCpuDeviceId));
     checkCudaErrors(cudaStreamSynchronize(0));
-  } else {
+  } else if (copy || pageable) {
     checkCudaErrors(cudaMemcpy(output_itemsets, matrix_cuda, sizeof(int) * size,
             cudaMemcpyDeviceToHost));
   }
+  printf("Done copying...\n");
+
   cudaEventRecord(stop, 0);
   cudaEventSynchronize(stop);
   cudaEventElapsedTime(&elapsedTime, start, stop);
   transferTime += elapsedTime * 1.e-3; // convert to seconds
+  //kernelTime += elapsedTime * 1.e-3;
+  totalTime += kernelTime + transferTime;
 
-  string outfile = op.getOptionString("outputFile");
-  if (outfile != "") {
-      FILE *fpo = fopen(outfile.c_str(), "w");
-      if(!quiet) {
-        fprintf(fpo, "Print traceback value GPU to %s:\n", outfile.c_str());
-      }
-
-      for (int i = max_rows - 2, j = max_rows - 2; i >= 0, j >= 0;) {
-          int nw, n, w, traceback;
-          if (i == max_rows - 2 && j == max_rows - 2) {
-              // print the first element
-              fprintf(fpo, "%d ", output_itemsets[i*max_cols+j]);
-          }
-          if (i == 0 && j == 0) {
-              break;
-          }
-          if (i > 0 && j > 0) {
-              nw = output_itemsets[(i - 1) * max_cols + j - 1];
-              w = output_itemsets[i * max_cols + j - 1];
-              n = output_itemsets[(i - 1) * max_cols + j];
-          } else if (i == 0) {
-              nw = n = LIMIT;
-              w = output_itemsets[i * max_cols + j - 1];
-          } else if (j == 0) {
-              nw = w = LIMIT;
-              n = output_itemsets[(i - 1) * max_cols + j];
-          } else {
-          }
-
-          // traceback = maximum(nw, w, n);
-          int new_nw, new_w, new_n;
-          new_nw = nw + referrence[i * max_cols + j];
-          new_w = w - penalty;
-          new_n = n - penalty;
-
-          traceback = maximum(new_nw, new_w, new_n);
-          if (traceback == new_nw) {
-              traceback = nw;
-          }
-          if (traceback == new_w) {
-              traceback = w;
-          }
-          if (traceback == new_n) {
-              traceback = n;
-          }
-
-          fprintf(fpo, "%d ", traceback);
-          if (traceback == nw) {
-              i--;
-              j--;
-              continue;
-          } else if (traceback == w) {
-              j--;
-              continue;
-          } else if (traceback == n) {
-              i--;
-              continue;
-          } else {
-          }
-      }
-      fclose(fpo);
-  }
+//  string outfile = op.getOptionString("outputFile");
+//  if (outfile != "") {
+////      FILE *fpo = fopen(outfile.c_str(), "w");
+////      if(!quiet) {
+////        fprintf(fpo, "Print traceback value GPU to %s:\n", outfile.c_str());
+////      }
+//
+//      for (int i = max_rows - 2, j = max_rows - 2; i >= 0, j >= 0;) {
+//          int nw, n, w, traceback;
+//          if (i == max_rows - 2 && j == max_rows - 2) {
+//              // print the first element
+//              fprintf(fpo, "%d ", output_itemsets[i*max_cols+j]);
+//          }
+//          if (i == 0 && j == 0) {
+//              break;
+//          }
+//          if (i > 0 && j > 0) {
+//              nw = output_itemsets[(i - 1) * max_cols + j - 1];
+//              w = output_itemsets[i * max_cols + j - 1];
+//              n = output_itemsets[(i - 1) * max_cols + j];
+//          } else if (i == 0) {
+//              nw = n = LIMIT;
+//              w = output_itemsets[i * max_cols + j - 1];
+//          } else if (j == 0) {
+//              nw = w = LIMIT;
+//              n = output_itemsets[(i - 1) * max_cols + j];
+//          } else {
+//          }
+//
+//          // traceback = maximum(nw, w, n);
+//          int new_nw, new_w, new_n;
+//          new_nw = nw + referrence[i * max_cols + j];
+//          new_w = w - penalty;
+//          new_n = n - penalty;
+//
+//          traceback = maximum(new_nw, new_w, new_n);
+//          if (traceback == new_nw) {
+//              traceback = nw;
+//          }
+//          if (traceback == new_w) {
+//              traceback = w;
+//          }
+//          if (traceback == new_n) {
+//              traceback = n;
+//          }
+//
+//          fprintf(fpo, "%d ", traceback);
+//          if (traceback == nw) {
+//              i--;
+//              j--;
+//              continue;
+//          } else if (traceback == w) {
+//              j--;
+//              continue;
+//          } else if (traceback == n) {
+//              i--;
+//              continue;
+//          } else {
+//          }
+//      }
+//      fclose(fpo);
+//  }
+  printf("Done output...\n");
 
   // Cleanup memory
-  if (uvm) {
+  if (uvm || uvm_prefetch) {
     checkCudaErrors(cudaFree(referrence_cuda));
     checkCudaErrors(cudaFree(matrix_cuda));
+  } else if (copy) {
+    checkCudaErrors(cudaFree(referrence_cuda));
+    checkCudaErrors(cudaFree(matrix_cuda));
+    checkCudaErrors(cudaFreeHost(output_itemsets));
+    checkCudaErrors(cudaFreeHost(referrence));
+    checkCudaErrors(cudaFreeHost(input_itemsets));
   } else {
     checkCudaErrors(cudaFree(referrence_cuda));
     checkCudaErrors(cudaFree(matrix_cuda));
@@ -374,9 +440,11 @@ void runTest(ResultDatabase &resultDB, OptionParser &op) {
   char tmp[32];
   sprintf(tmp, "%ditems", size);
   string atts = string(tmp);
-  resultDB.AddResult("NW-TransferTime", atts, "sec", transferTime);
+  //resultDB.AddResult("NW-TransferTime", atts, "sec", transferTime);
   resultDB.AddResult("NW-KernelTime", atts, "sec", kernelTime);
-  resultDB.AddResult("NW-TotalTime", atts, "sec", transferTime + kernelTime);
-  resultDB.AddResult("NW-Rate_Parity", atts, "N", transferTime / kernelTime);
-  resultDB.AddOverall("Time", "sec", kernelTime+transferTime);
+  resultDB.AddResult("NW-TotalTime", atts, "sec", totalTime);
+  ofile << bench_name << ", " << totalTime << ", " << endl;
+//  resultDB.AddResult("NW-TotalTime", atts, "sec", transferTime + kernelTime);
+//  resultDB.AddResult("NW-Rate_Parity", atts, "N", transferTime / kernelTime);
+//  resultDB.AddOverall("Time", "sec", kernelTime+transferTime);
 }

@@ -606,11 +606,16 @@ int findIndex(double * CDF, int lengthCDF, double value){
 /// 	and y arrays as arguments and returns the likelihoods
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-void particleFilter(int * I, int IszX, int IszY, int Nfr, int * seed, int Nparticles, OptionParser &op, ResultDatabase &resultDB) {
+void particleFilter(int * I, int IszX, int IszY, int Nfr, int * seed, int Nparticles, OptionParser &op, ResultDatabase &resultDB, ofstream &ofile, sem_t *sem) {
 	const bool uvm = op.getOptionBool("uvm");
+	const bool copy = op.getOptionBool("copy");
+	const bool pageable = op.getOptionBool("pageable");
     const bool uvm_advise = op.getOptionBool("uvm-advise");
     const bool uvm_prefetch = op.getOptionBool("uvm-prefetch");
     const bool uvm_prefetch_advise = op.getOptionBool("uvm-prefetch-advise");
+    const bool is_barrier = op.getOptionBool("sem");
+    string bench_name = op.getOptionString("bench");
+
     int device = 0;
 	checkCudaErrors(cudaGetDevice(&device));
 
@@ -632,7 +637,9 @@ void particleFilter(int * I, int IszX, int IszY, int Nfr, int * seed, int Nparti
 	int *disk = NULL;
 	if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise) {
 		checkCudaErrors(cudaMallocManaged(&disk, diameter * diameter * sizeof(int)));
-	} else {
+	} else if (copy) {
+		checkCudaErrors(cudaMallocHost(&disk, diameter * diameter * sizeof(int)));
+    } else if (pageable) {
 		disk = (int *)malloc(diameter*diameter*sizeof(int));
 		assert(disk);
 	}
@@ -648,7 +655,9 @@ void particleFilter(int * I, int IszX, int IszY, int Nfr, int * seed, int Nparti
 	double *objxy = NULL;
 	if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise) {
 		checkCudaErrors(cudaMallocManaged(&objxy, countOnes*2*sizeof(double)));
-	} else {
+    } else if (copy) {
+		checkCudaErrors(cudaMallocHost(&objxy, countOnes*2*sizeof(double)));
+	} else if (pageable)  {
 		objxy = (double *)malloc(countOnes*2*sizeof(double));
 		assert(objxy);
 	}
@@ -658,7 +667,9 @@ void particleFilter(int * I, int IszX, int IszY, int Nfr, int * seed, int Nparti
 	double *weights = NULL;
 	if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise) {
 		checkCudaErrors(cudaMallocManaged(&weights, sizeof(double) * Nparticles));
-	} else {
+	} else if (copy) {
+		checkCudaErrors(cudaMallocHost(&weights, sizeof(double) * Nparticles));
+	} else if (pageable) {
 		weights = (double *)malloc(sizeof(double)*Nparticles);
 		assert(weights);
 	}
@@ -679,7 +690,14 @@ void particleFilter(int * I, int IszX, int IszY, int Nfr, int * seed, int Nparti
 		checkCudaErrors(cudaMallocManaged(&xj, sizeof(double) * Nparticles));
 		checkCudaErrors(cudaMallocManaged(&yj, sizeof(double) * Nparticles));
 		checkCudaErrors(cudaMallocManaged(&CDF, sizeof(double) * Nparticles));
-	} else {
+	} else if (copy) {
+		checkCudaErrors(cudaMallocHost(&likelihood, sizeof(double) * Nparticles));
+		checkCudaErrors(cudaMallocHost(&arrayX, sizeof(double) * Nparticles));
+		checkCudaErrors(cudaMallocHost(&arrayY, sizeof(double) * Nparticles));
+		checkCudaErrors(cudaMallocHost(&xj, sizeof(double) * Nparticles));
+		checkCudaErrors(cudaMallocHost(&yj, sizeof(double) * Nparticles));
+		checkCudaErrors(cudaMallocHost(&CDF, sizeof(double) * Nparticles));
+	} else if (pageable) {
 		likelihood = (double *)malloc(sizeof(double)*Nparticles);
 		assert(likelihood);
 		arrayX = (double *)malloc(sizeof(double)*Nparticles);
@@ -700,7 +718,10 @@ void particleFilter(int * I, int IszX, int IszY, int Nfr, int * seed, int Nparti
 	if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise) {
 		checkCudaErrors(cudaMallocManaged(&ind, sizeof(int) * countOnes));
 		checkCudaErrors(cudaMallocManaged(&u, sizeof(double) * Nparticles));
-	} else {
+	} else if (copy) {
+		checkCudaErrors(cudaMallocHost(&ind, sizeof(int) * countOnes));
+		checkCudaErrors(cudaMallocHost(&u, sizeof(double) * Nparticles));
+	} else if (pageable) {
 		ind = (int*)malloc(sizeof(int)*countOnes);
 		assert(ind);
 		u = (double *)malloc(sizeof(double)*Nparticles);
@@ -722,7 +743,7 @@ void particleFilter(int * I, int IszX, int IszY, int Nfr, int * seed, int Nparti
 		yj_GPU = yj;
 		CDF_GPU = CDF;
 		u_GPU = u;
-	} else {
+	} else if (pageable || copy) {
 		checkCudaErrors(cudaMalloc((void **) &arrayX_GPU, sizeof(double)*Nparticles));
 		checkCudaErrors(cudaMalloc((void **) &arrayY_GPU, sizeof(double)*Nparticles));
 		checkCudaErrors(cudaMalloc((void **) &xj_GPU, sizeof(double)*Nparticles));
@@ -806,7 +827,9 @@ void particleFilter(int * I, int IszX, int IszY, int Nfr, int * seed, int Nparti
 			u[x] = u1 + x/((double)(Nparticles));
 		}
 		//CUDA memory copying from CPU memory to GPU memory
-        checkCudaErrors(cudaEventRecord(start, 0));
+        // TODO: copy
+        if (!pageable) 
+            checkCudaErrors(cudaEventRecord(start, 0));
 		// Use demand paging, or hyperq async cpy
 		if (uvm) {
 
@@ -876,7 +899,17 @@ void particleFilter(int * I, int IszX, int IszY, int Nfr, int * seed, int Nparti
 			checkCudaErrors(cudaStreamDestroy(s3));
 			checkCudaErrors(cudaStreamDestroy(s4));
 			checkCudaErrors(cudaStreamDestroy(s5));
-		} else {
+        } else if (copy || pageable) {
+            if (is_barrier && pageable) {
+                int sval;
+                sem_post(sem);
+                sem_getvalue(sem, &sval);
+                while (sval == 1) {
+                    sem_getvalue(sem, &sval);
+                }
+                printf("[Barrier] Copying starts\n");
+            }
+            checkCudaErrors(cudaEventRecord(start, 0));
 			checkCudaErrors(cudaMemcpy(arrayX_GPU, arrayX, sizeof(double)*Nparticles, cudaMemcpyHostToDevice));
 			checkCudaErrors(cudaMemcpy(arrayY_GPU, arrayY, sizeof(double)*Nparticles, cudaMemcpyHostToDevice));
 			checkCudaErrors(cudaMemcpy(xj_GPU, xj, sizeof(double)*Nparticles, cudaMemcpyHostToDevice));
@@ -891,7 +924,17 @@ void particleFilter(int * I, int IszX, int IszY, int Nfr, int * seed, int Nparti
         transferTime += elapsedTime * 1.e-3;
 		//Set number of threads
 		int num_blocks = ceil((double) Nparticles/(double) threads_per_block);
-		
+
+        if (is_barrier && uvm) {
+            int sval;
+            sem_post(sem);
+            sem_getvalue(sem, &sval);
+            while (sval == 1) {
+                sem_getvalue(sem, &sval);
+            }
+            printf("[Barrier] Kernel starts\n");
+        }
+
 		//KERNEL FUNCTION CALL
         checkCudaErrors(cudaEventRecord(start, 0));
 		kernel <<< num_blocks, threads_per_block >>> (arrayX_GPU, arrayY_GPU, CDF_GPU, u_GPU, xj_GPU, yj_GPU, Nparticles);
@@ -928,7 +971,7 @@ void particleFilter(int * I, int IszX, int IszY, int Nfr, int * seed, int Nparti
 			checkCudaErrors(cudaStreamCreate(&s1));
 			checkCudaErrors(cudaMemPrefetchAsync(xj, sizeof(double)*Nparticles, cudaCpuDeviceId, (cudaStream_t)1));
 			checkCudaErrors(cudaStreamDestroy(s1));
-		} else {
+		} else if (copy || pageable) {
 			checkCudaErrors(cudaMemcpy(yj, yj_GPU, sizeof(double)*Nparticles, cudaMemcpyDeviceToHost));
 			checkCudaErrors(cudaMemcpy(xj, xj_GPU, sizeof(double)*Nparticles, cudaMemcpyDeviceToHost));
 		}
@@ -944,6 +987,7 @@ void particleFilter(int * I, int IszX, int IszY, int Nfr, int * seed, int Nparti
 			weights[x] = 1/((double)(Nparticles));
 		}
 	}
+    printf("Done transfer...\n");
     
     char atts[1024];
     sprintf(atts, "dimx:%d, dimy:%d, numframes:%d, numparticles:%d", IszX, IszY, Nfr, Nparticles);
@@ -952,6 +996,7 @@ void particleFilter(int * I, int IszX, int IszY, int Nfr, int * seed, int Nparti
     resultDB.AddResult("particlefilter_naive_total_time", atts, "sec", kernelTime+transferTime);
     resultDB.AddResult("particlefilter_naive_parity", atts, "N", transferTime / kernelTime);
     resultDB.AddOverall("Time", "sec", kernelTime+transferTime);
+    ofile << bench_name << ", " << kernelTime + transferTime << ", " << endl;
 	
 	//CUDA freeing of memory
 	if (!uvm && !uvm_advise && !uvm_prefetch && !uvm_prefetch_advise) {
@@ -961,7 +1006,7 @@ void particleFilter(int * I, int IszX, int IszY, int Nfr, int * seed, int Nparti
 		checkCudaErrors(cudaFree(xj_GPU));
 		checkCudaErrors(cudaFree(arrayY_GPU));
 		checkCudaErrors(cudaFree(arrayX_GPU));
-	}
+	} 
 	
 	//free memory
 	if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise) {
@@ -976,7 +1021,19 @@ void particleFilter(int * I, int IszX, int IszY, int Nfr, int * seed, int Nparti
 		checkCudaErrors(cudaFree(CDF));
 		checkCudaErrors(cudaFree(u));
 		checkCudaErrors(cudaFree(ind));
-	} else {
+	} else if (copy) {
+		cudaFreeHost(disk);
+		cudaFreeHost(objxy);
+		cudaFreeHost(weights);
+		cudaFreeHost(likelihood);
+		cudaFreeHost(arrayX);
+		cudaFreeHost(arrayY);
+		cudaFreeHost(xj);
+		cudaFreeHost(yj);
+		cudaFreeHost(CDF);
+		cudaFreeHost(u);
+		cudaFreeHost(ind);
+    } else if (pageable) {
 		free(disk);
 		free(objxy);
 		free(weights);
@@ -1021,7 +1078,7 @@ void addBenchmarkSpecOptions(OptionParser &op) {
 /// @param 		   	args		The arguments. 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-void particlefilter_naive(ResultDatabase &resultDB, OptionParser &op, int args[]);
+void particlefilter_naive(ResultDatabase &resultDB, OptionParser &op, int args[], ofstream &ofile, sem_t *sem);
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 /// @fn	void RunBenchmark(ResultDatabase &resultDB, OptionParser &op)
@@ -1035,7 +1092,8 @@ void particlefilter_naive(ResultDatabase &resultDB, OptionParser &op, int args[]
 /// @param [in,out]	op			The operation. 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-void RunBenchmark(ResultDatabase &resultDB, OptionParser &op) {
+//void RunBenchmark(ResultDatabase &resultDB, OptionParser &op) {
+void RunBenchmark(ResultDatabase &resultDB, OptionParser &op, ofstream &ofile, sem_t *sem) {
     printf("Running ParticleFilter (naive)\n");
     int args[4];
     args[0] = op.getOptionInt("dimx");
@@ -1072,7 +1130,7 @@ void RunBenchmark(ResultDatabase &resultDB, OptionParser &op) {
         if(!quiet) {
             printf("Pass %d: ", i);
         }
-        particlefilter_naive(resultDB, op, args);
+        particlefilter_naive(resultDB, op, args, ofile, sem);
         if(!quiet) {
             printf("Done.\n");
         }
@@ -1091,11 +1149,12 @@ void RunBenchmark(ResultDatabase &resultDB, OptionParser &op) {
 /// @param 		   	args		The arguments. 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-void particlefilter_naive(ResultDatabase &resultDB, OptionParser &op, int args[]){
+void particlefilter_naive(ResultDatabase &resultDB, OptionParser &op, int args[], ofstream &ofile, sem_t *sem){
 	const bool uvm = op.getOptionBool("uvm");
     const bool uvm_advise = op.getOptionBool("uvm-advise");
     const bool uvm_prefetch = op.getOptionBool("uvm-prefetch");
     const bool uvm_prefetch_advise = op.getOptionBool("uvm-prefetch-advise");
+
     int device = 0;
     checkCudaErrors(cudaGetDevice(&device));
 
@@ -1127,7 +1186,7 @@ void particlefilter_naive(ResultDatabase &resultDB, OptionParser &op, int args[]
 	//call video sequence
 	videoSequence(op, I, IszX, IszY, Nfr, seed);
 	//call particle filter
-	particleFilter(I, IszX, IszY, Nfr, seed, Nparticles, op, resultDB);
+	particleFilter(I, IszX, IszY, Nfr, seed, Nparticles, op, resultDB, ofile, sem);
 	
 	if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise) {
 		checkCudaErrors(cudaFree(seed));

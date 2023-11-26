@@ -13,6 +13,7 @@
 #include <cuda.h> 
 #include <cuda_runtime.h>
 
+
 #include "ResultDatabase.h"
 #include "OptionParser.h"
 #include "Utility.h"
@@ -22,7 +23,8 @@ using namespace std;
 
 // Forward Declarations
 void addBenchmarkSpecOptions(OptionParser &op);
-void RunBenchmark(ResultDatabase &resultDB, OptionParser &op);
+void RunBenchmark(ResultDatabase &resultDB, OptionParser &op, ofstream &ofile, sem_t *sem);
+//void RunBenchmarkSem(ResultDatabase &resultDB, OptionParser &op, ofstream &ofile, sem_t *sem);
 
 // ****************************************************************************
 // Function: EnumerateDevicesAndChoose
@@ -178,6 +180,7 @@ void checkCudaFeatureAvailability(OptionParser &op) {
 // ****************************************************************************
 int main(int argc, char *argv[])
 {
+
     int ret = 0;
 
     try
@@ -200,13 +203,23 @@ int main(int argc, char *argv[])
         op.addOption("metricsFile", OPT_STRING, "", "path of file to write metrics to", 'm');
 
         // Add options for turn on/off CUDA features
+        // (taeklim)
+        op.addOption("pageable", OPT_BOOL, "0", "enable pageable memory allocation (cudaMalloc)");
+        op.addOption("copy", OPT_BOOL, "0", "enable pinned memory allocation (cudaMallocHost)");
+        op.addOption("dha", OPT_BOOL, "0", "enable direct-host-access (cudaMallocHost w/o cudaMemcpy)");
         op.addOption("uvm", OPT_BOOL, "0", "enable CUDA Unified Virtual Memory, only demand paging");
+        op.addOption("uvm-copy", OPT_BOOL, "0", "enable CUDA Unified Virtual Memory with manual memcopy");
+        op.addOption("uvm-oversub", OPT_BOOL, "0", "enable CUDA Unified Virtual Memory with oversubscription");
+
         op.addOption("uvm-advise", OPT_BOOL, "0", "guide the driver about memory usage patterns");
         op.addOption("uvm-prefetch", OPT_BOOL, "0", "prefetch memory the specified destination device");
         op.addOption("uvm-prefetch-advise", OPT_BOOL, "0", "prefetch memory the specified destination device with memory guidance on");
         op.addOption("coop", OPT_BOOL, "0", "enable CUDA Cooperative Groups");
         op.addOption("dyn", OPT_BOOL, "0", "enable CUDA Dynamic Parallelism");
         op.addOption("graph", OPT_BOOL, "0", "enable CUDA Graphs");
+        // (taeklim)
+        op.addOption("sem", OPT_BOOL, "0", "enable barrier to sync multiple processes");
+        op.addOption("bench", OPT_STRING, "", "Benchmark name", 'b');
 
         addBenchmarkSpecOptions(op);
 
@@ -216,9 +229,23 @@ int main(int argc, char *argv[])
             return (op.HelpRequested() ? 0 : 1);
         }
 
+        // (taeklim): Open semaphore which is used for barrier 
+        // for sync of kernel launch 
+        bool is_barrier = op.getOptionBool("sem");
+        sem_t *sem;
+        if (is_barrier) {
+            sem = sem_open(SEM_NAME, O_CREAT, SEM_PERMS, INITIAL_VALUE);
+            if (sem == SEM_FAILED) {
+                perror("sem_open(3) error");
+            }
+        } else {
+            sem = SEM_FAILED;
+        }
+
         bool properties = op.getOptionBool("properties");
         bool quiet = op.getOptionBool("quiet");
         string metricsfile = op.getOptionString("metricsFile");
+        string outputfile = op.getOptionString("outputFile");
 
         int device;
         device = op.getOptionVecInt("device")[0];
@@ -239,11 +266,21 @@ int main(int argc, char *argv[])
 
         // Check CUDA feature availability
         checkCudaFeatureAvailability(op);
-
+        
         ResultDatabase resultDB;
 
+        // (taeklim): output file
+        ofstream ofile;
+        if (!outputfile.empty()) {
+            printf("outputfile path: %s\n", outputfile.c_str());
+            ofile.open(outputfile.c_str(), ios_base::app);
+        } else {
+            printf("");
+        }
         // Run the benchmark
-        RunBenchmark(resultDB, op);
+        RunBenchmark(resultDB, op, ofile, sem);
+        printf("Done RunBenchmark\n");
+        fflush(stdout);
 
         // If quiet, output overall result
         // else output metrics
@@ -260,6 +297,9 @@ int main(int argc, char *argv[])
                 ofs.close();
             }
         }
+        // (taeklim)
+        if (is_barrier && sem_unlink(SEM_NAME) < 0)
+            perror("sem_unlink(3) failed");
     }
     catch( std::exception& e )
     {

@@ -37,7 +37,7 @@ using namespace std;
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 template <class T>
-void RunTest(string testName, ResultDatabase &resultDB, OptionParser &op);
+void RunTest(string testName, ResultDatabase &resultDB, OptionParser &op, ofstream &ofile, sem_t *sem);
 
 // origianlly don't need handle in v1 cublas
 
@@ -153,7 +153,8 @@ void addBenchmarkSpecOptions(OptionParser &op) {}
 // Modifications:
 //
 // ****************************************************************************
-void RunBenchmark(ResultDatabase &resultDB, OptionParser &op) {
+//void RunBenchmark(ResultDatabase &resultDB, OptionParser &op) {
+void RunBenchmark(ResultDatabase &resultDB, OptionParser &op, ofstream &ofile, sem_t *sem) {
    cout << "Running GEMM" << endl;
   int device;
   cudaGetDevice(&device);
@@ -164,10 +165,10 @@ void RunBenchmark(ResultDatabase &resultDB, OptionParser &op) {
 
   bool quiet = op.getOptionBool("quiet");
 
-  if(!quiet) {
-    cout << "Running single precision test" << endl;
-  }
-  RunTest<float>("SGEMM", resultDB, op);
+//  if(!quiet) {
+//    cout << "Running single precision test" << endl;
+//  }
+//  RunTest<float>("SGEMM", resultDB, op);
 
 
   // Test to see if this device supports double precision
@@ -176,15 +177,15 @@ void RunBenchmark(ResultDatabase &resultDB, OptionParser &op) {
     if(!quiet) {
         cout << "Running double precision test" << endl;
     }
-    RunTest<double>("DGEMM", resultDB, op);
+    RunTest<double>("DGEMM", resultDB, op, ofile, sem);
   }
 
-  if ((deviceProp.major >= 6)) {
-    if (!quiet) {
-        cout << "Running half preicsion test" << endl;
-    }
-    RunTest<half>("HGEMM", resultDB, op);
-  }
+//  if ((deviceProp.major >= 6)) {
+//    if (!quiet) {
+//        cout << "Running half preicsion test" << endl;
+//    }
+//    RunTest<half>("HGEMM", resultDB, op);
+//  }
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -197,13 +198,20 @@ void RunBenchmark(ResultDatabase &resultDB, OptionParser &op) {
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 template <class T>
-void RunTest(string testName, ResultDatabase &resultDB, OptionParser &op) {
+void RunTest(string testName, ResultDatabase &resultDB, OptionParser &op, ofstream &ofile, sem_t *sem) {
   int passes = op.getOptionInt("passes");
   int device = op.getOptionInt("device");
   const bool uvm = op.getOptionBool("uvm");
+  // (taeklim)
+  const bool copy = op.getOptionBool("copy");
+  const bool pageable = op.getOptionBool("pageable");
+  const bool uvm_oversub = op.getOptionBool("uvm-oversub");
+  const bool uvm_copy = op.getOptionBool("uvm-copy");
   const bool uvm_prefetch = op.getOptionBool("uvm-prefetch");
   const bool uvm_advise = op.getOptionBool("uvm-advise");
   const bool uvm_prefetch_advise = op.getOptionBool("uvm-prefetch-advise");
+  const bool is_barrier = op.getOptionBool("sem");
+  string bench_name = op.getOptionString("bench");
   int kib;
 
   // Use preset problem size or read data from input file
@@ -220,6 +228,7 @@ void RunTest(string testName, ResultDatabase &resultDB, OptionParser &op) {
 
   // Dimensions of matrix
   int N = kib * 1024 / sizeof(T);
+  printf("N: %d\n", N*sizeof(T));
 
   // Initialize the cublas library
   cublasHandle_t handle; // CUBLAS context
@@ -234,7 +243,7 @@ void RunTest(string testName, ResultDatabase &resultDB, OptionParser &op) {
   T *A;
   T *B;
   T *C;
-  if (uvm || uvm_prefetch || uvm_advise || uvm_prefetch_advise) {
+  if (uvm || uvm_prefetch || uvm_advise || uvm_prefetch_advise || uvm_copy) {
       checkCudaErrors(cudaMallocManaged(&dA, N * N* sizeof(T)));
       checkCudaErrors(cudaMallocManaged(&dB, N * N* sizeof(T)));
       checkCudaErrors(cudaMallocManaged(&dC, N * N* sizeof(T)));
@@ -246,8 +255,9 @@ void RunTest(string testName, ResultDatabase &resultDB, OptionParser &op) {
       } else {
           readMatrix(dA, dB, dC, N * N, filename);
       }
-  }
-  else {
+  } else if (uvm_oversub) {
+      //TODO
+  } else if (copy) {
       checkCudaErrors(cudaMalloc(&dA, N * N * sizeof(T)));
       checkCudaErrors(cudaMalloc(&dB, N * N * sizeof(T)));
       checkCudaErrors(cudaMalloc(&dC, N * N * sizeof(T)));
@@ -264,7 +274,25 @@ void RunTest(string testName, ResultDatabase &resultDB, OptionParser &op) {
       } else {
         readMatrix(A, B, C, N * N, filename);
       }
+  } else if (pageable) {
+      checkCudaErrors(cudaMalloc(&dA, N * N * sizeof(T)));
+      checkCudaErrors(cudaMalloc(&dB, N * N * sizeof(T)));
+      checkCudaErrors(cudaMalloc(&dC, N * N * sizeof(T)));
+
+      A = (T *)malloc(N * N * sizeof(T));
+      B = (T *)malloc(N * N * sizeof(T));
+      C = (T *)malloc(N * N * sizeof(T));
+
+      // Fill matrix or read from input file
+      if (filename == "") {
+          fill<T>(A, N * N, 31);
+          fill<T>(B, N * N, 31);
+          fill<T>(C, N * N, 31);
+      } else {
+        readMatrix(A, B, C, N * N, filename);
+      }
   }
+  printf("Done init...\n");
 
   // Copy input to GPU
   cudaEvent_t start, stop;
@@ -275,11 +303,12 @@ void RunTest(string testName, ResultDatabase &resultDB, OptionParser &op) {
   // Copy inputs to GPU
 
   double transferTime = 0;
-  checkCudaErrors(cudaEventRecord(start, 0));
 
   if (uvm) {
+      checkCudaErrors(cudaEventRecord(start, 0));
       // Do nothing
-  } else if (uvm_prefetch) {
+  } else if (uvm_prefetch || uvm_copy) {
+      checkCudaErrors(cudaEventRecord(start, 0));
       // could ignore this to test demand paging performance affect
       checkCudaErrors(cudaMemPrefetchAsync(dA, N * N * sizeof(T), device));
       cudaStream_t s1;
@@ -289,10 +318,12 @@ void RunTest(string testName, ResultDatabase &resultDB, OptionParser &op) {
       // checkCudaErrors(cudaStreamSynchronize(0));
       // checkCudaErrors(cudaStreamSynchronize((cudaStream_t)1));
   } else if (uvm_advise) {
+      checkCudaErrors(cudaEventRecord(start, 0));
       // Do nothing for demand paging
       checkCudaErrors(cudaMemAdvise(dA, N * N * sizeof(T), cudaMemAdviseSetPreferredLocation, device));
       checkCudaErrors(cudaMemAdvise(dB, N * N * sizeof(T), cudaMemAdviseSetPreferredLocation, device));
   } else if (uvm_prefetch_advise) {
+      checkCudaErrors(cudaEventRecord(start, 0));
       checkCudaErrors(cudaMemAdvise(dA, N * N * sizeof(T), cudaMemAdviseSetPreferredLocation, device));
       checkCudaErrors(cudaMemAdvise(dB, N * N * sizeof(T), cudaMemAdviseSetPreferredLocation, device));
       checkCudaErrors(cudaMemPrefetchAsync(dA, N * N * sizeof(T), device));
@@ -300,10 +331,21 @@ void RunTest(string testName, ResultDatabase &resultDB, OptionParser &op) {
       checkCudaErrors(cudaStreamCreate(&s1));
       checkCudaErrors(cudaMemPrefetchAsync(dB, N * N * sizeof(T), device, s1));
       checkCudaErrors(cudaStreamDestroy(s1));
-  } else {
+  } else if (copy || pageable) {
+      if (is_barrier) {
+          int sval;
+          sem_post(sem);
+          sem_getvalue(sem, &sval);
+          while (sval == 1) {
+              sem_getvalue(sem, &sval);
+          }
+          printf("[Barrier] Copy starts\n");
+      }
+      checkCudaErrors(cudaEventRecord(start, 0));
       checkCudaErrors(cudaMemcpy(dA, A, N * N * sizeof(T), cudaMemcpyHostToDevice));
       checkCudaErrors(cudaMemcpy(dB, B, N * N * sizeof(T), cudaMemcpyHostToDevice));
   }
+  printf("Done copying...\n");
 
   checkCudaErrors(cudaEventRecord(stop, 0));
   checkCudaErrors(cudaEventSynchronize(stop));
@@ -311,6 +353,18 @@ void RunTest(string testName, ResultDatabase &resultDB, OptionParser &op) {
   transferTime += elapsedTime * 1.e-3;
 
   bool first = true;
+
+  // (taeklim): Waiting for the other apps finishes the initialization
+  if (is_barrier && uvm) {
+      int sval;
+      sem_post(sem);
+      sem_getvalue(sem, &sval);
+      while (sval == 1) {
+          sem_getvalue(sem, &sval);
+      }
+      printf("[Barrier] Kernel starts\n");
+  }
+
 /// <summary>	. </summary>
   for (int j = 0; j < passes; j++) {
     for (int i = 0; i < 2; i++) {
@@ -342,20 +396,20 @@ void RunTest(string testName, ResultDatabase &resultDB, OptionParser &op) {
           checkCudaErrors(cudaEventRecord(start, 0));
           devGEMM<T>(handle, transa, transb, m, n, k, &alpha, dA, lda, dB, ldb, &beta, dC,
                     ldc);
-          checkCudaErrors(cudaEventRecord(stop, 0));
-          checkCudaErrors(cudaEventSynchronize(stop));
           CHECK_CUDA_ERROR();
-          float currTime = 0.0f;
-          checkCudaErrors(cudaEventElapsedTime(&currTime, start, stop));
-          kernelTime += currTime;
       }
+      checkCudaErrors(cudaEventRecord(stop, 0));
+      checkCudaErrors(cudaEventSynchronize(stop));
+      float currTime = 0.0f;
+      checkCudaErrors(cudaEventElapsedTime(&currTime, start, stop));
+      kernelTime += currTime;
       cublasTime = (kernelTime / 4.0) * 1.e-3;
 
       checkCudaErrors(cudaEventRecord(start, 0));    // timing may be affected by async
 
       if (uvm) {
         // Do nothing
-      } else if (uvm_prefetch) {
+      } else if (uvm_prefetch || uvm_copy) {
           checkCudaErrors(cudaMemPrefetchAsync(dC, N * N * sizeof(T), cudaCpuDeviceId));
           // checkCudaErrors(cudaStreamSynchronize(0));
       } else if (uvm_advise) {
@@ -365,7 +419,7 @@ void RunTest(string testName, ResultDatabase &resultDB, OptionParser &op) {
           checkCudaErrors(cudaMemAdvise(dC, N * N * sizeof(T), cudaMemAdviseSetPreferredLocation, cudaCpuDeviceId));
           checkCudaErrors(cudaMemAdvise(dC, N * N * sizeof(T), cudaMemAdviseSetPreferredLocation, cudaCpuDeviceId));
           checkCudaErrors(cudaMemPrefetchAsync(dC, N * N * sizeof(T), cudaCpuDeviceId));
-      } else {
+      } else if (copy || pageable) {
           checkCudaErrors(cudaMemcpy(C, dC, N * N * sizeof(T), cudaMemcpyDeviceToHost));
       }
 
@@ -380,30 +434,37 @@ void RunTest(string testName, ResultDatabase &resultDB, OptionParser &op) {
         transferTime += oTransferTime;
         first = false;
       }
+      float totalTime = oTransferTime + kernelTime;
 
       double cublasGflops = 2. * m * n * k / cublasTime / 1e9;
       double pcieGflops = 2. * m * n * k / (cublasTime + transferTime) / 1e9;
       std::string transb_string = (transb == CUBLAS_OP_T)? "T" : "N";
       string atts = "dim:" + toString(dim);
-      resultDB.AddResult(testName + "-" + transb_string + "-TransferTime", atts, "sec", transferTime);
-      resultDB.AddResult(testName + "-" + transb_string + "-KernelTime", atts, "sec", cublasTime);
-      resultDB.AddResult(testName + "-" + transb_string + "-TotalTime", atts, "sec", transferTime + cublasTime);
-      resultDB.AddResult(testName + "-" + transb_string, atts, "GFlops", cublasGflops);
-      resultDB.AddResult(testName + "-" + transb_string + "_PCIe", atts, "GFlops", pcieGflops);
-      resultDB.AddResult(testName + "-" + transb_string + "_Parity", atts, "N", transferTime / cublasTime);
-      resultDB.AddOverall("GFlops", "", cublasGflops);
+      //resultDB.AddResult(testName + "-" + transb_string + "-TransferTime", atts, "sec", transferTime);
+      resultDB.AddResult(testName + "-" + transb_string + "-TotalTime", atts, "sec", totalTime);
+      resultDB.AddResult(testName + "-" + transb_string + "-KernelTime", atts, "sec", kernelTime);
+
+      ofile << bench_name << ", " << kernelTime << ", " << endl;
+//      resultDB.AddResult(testName + "-" + transb_string + "-cublasTime", atts, "sec", cublasTime);
+//      resultDB.AddResult(testName + "-" + transb_string + "-TotalTime", atts, "sec", transferTime + cublasTime);
+//      resultDB.AddResult(testName + "-" + transb_string, atts, "GFlops", cublasGflops);
+//      resultDB.AddResult(testName + "-" + transb_string + "_PCIe", atts, "GFlops", pcieGflops);
+//      resultDB.AddResult(testName + "-" + transb_string + "_Parity", atts, "N", transferTime / cublasTime);
+//      resultDB.AddOverall("GFlops", "", cublasGflops);
     }
   }
-
   // Clean Up
-
   checkCudaErrors(cudaFree(dA));
   checkCudaErrors(cudaFree(dB));
   checkCudaErrors(cudaFree(dC));
-  if (!uvm && !uvm_prefetch && !uvm_advise && !uvm_prefetch_advise) {
+  if (!uvm && !uvm_prefetch && !uvm_advise && !uvm_prefetch_advise && !uvm_copy && !pageable) {
     checkCudaErrors(cudaFreeHost(A));
     checkCudaErrors(cudaFreeHost(B));
     checkCudaErrors(cudaFreeHost(C));
+  } else if (pageable) {
+      free(A);
+      free(B);
+      free(C);
   }
 
   checkCudaErrors(cudaEventDestroy(start));

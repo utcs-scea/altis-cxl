@@ -797,7 +797,7 @@ void cfd(ResultDatabase &resultDB, OptionParser &op);
 /// <param name="op">	   	[in,out] The operation. </param>
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-void RunBenchmark(ResultDatabase &resultDB, OptionParser &op) {
+void RunBenchmark(ResultDatabase &resultDB, OptionParser &op, ofstream &ofile, sem_t *sem) {
     printf("Running CFDSolver (double)\n");
     bool quiet = op.getOptionBool("quiet");
     if(!quiet) {

@@ -217,7 +217,7 @@ void addBenchmarkSpecOptions(OptionParser &op) {
 //
 // ****************************************************************************
 
-void RunBenchmark(ResultDatabase &resultDB, OptionParser &op) {
+void RunBenchmark(ResultDatabase &resultDB, OptionParser &op, ofstream &ofile, sem_t *sem) {
     cout << "Running DeviceMemory" << endl;
     // Enable quiet output
     bool quiet = op.getOptionBool("quiet");

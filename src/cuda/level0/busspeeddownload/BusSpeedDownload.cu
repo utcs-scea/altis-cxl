@@ -65,7 +65,8 @@ void addBenchmarkSpecOptions(OptionParser &op) {
 //    Added UVM prefetch.
 //
 // ****************************************************************************
-void RunBenchmark(ResultDatabase &resultDB, OptionParser &op) {
+//void RunBenchmark(ResultDatabase &resultDB, OptionParser &op) {
+void RunBenchmark(ResultDatabase &resultDB, OptionParser &op, ofstream &ofile, sem_t *sem) {
     cout << "Running BusSpeedDownload" << endl;
     const bool verbose = op.getOptionBool("verbose");
     const bool quiet = op.getOptionBool("quiet");

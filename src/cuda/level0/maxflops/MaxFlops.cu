@@ -167,7 +167,7 @@ void addBenchmarkSpecOptions(OptionParser &op) {}
 //    Bodun Hu, January 1, 2019
 //
 // ****************************************************************************
-void RunBenchmark(ResultDatabase &resultDB, OptionParser &op) {
+void RunBenchmark(ResultDatabase &resultDB, OptionParser &op, ofstream &ofile, sem_t *sem) {
   cout << "Running MaxFlops" << endl;
   bool verbose = op.getOptionBool("verbose");
   bool quiet = op.getOptionBool("quiet");

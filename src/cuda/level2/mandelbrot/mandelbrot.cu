@@ -542,11 +542,16 @@ __global__ void mandelbrot_block_k
 /// @param 	MAX_DWELL	The maximum dwell. 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-void mandelbrot(ResultDatabase &resultDB, OptionParser &op, int size, int MAX_DWELL) {
+void mandelbrot(ResultDatabase &resultDB, OptionParser &op, int size, int MAX_DWELL, 
+        sem_t *sem) {
 	const bool uvm = op.getOptionBool("uvm");
+	const bool copy = op.getOptionBool("copy");
+	const bool pageable = op.getOptionBool("pageable");
 	const bool uvm_advise = op.getOptionBool("uvm-advise");
 	const bool uvm_prefetch = op.getOptionBool("uvm-prefetch");
 	const bool uvm_prefetch_advise = op.getOptionBool("uvm-prefetch-advise");
+    const bool is_barrier = op.getOptionBool("sem");
+    string bench_name = op.getOptionString("bench");
 	int device = 0;
 	checkCudaErrors(cudaGetDevice(&device));
 
@@ -556,11 +561,27 @@ void mandelbrot(ResultDatabase &resultDB, OptionParser &op, int size, int MAX_DW
 	int *h_dwells, *d_dwells;
 	if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise) {
 		checkCudaErrors(cudaMallocManaged((void**)&d_dwells, dwell_sz));
-	} else {
+        // (taeklim)
+        memset(d_dwells, 1, dwell_sz);
+	} else if (pageable) {
 		checkCudaErrors(cudaMalloc((void**)&d_dwells, dwell_sz));
 		h_dwells = (int *)malloc(dwell_sz);
 		assert(h_dwells);
-	}
+	} else if (copy) {
+		checkCudaErrors(cudaMalloc((void**)&d_dwells, dwell_sz));
+		checkCudaErrors(cudaMallocHost((void**)&h_dwells, dwell_sz));
+    }
+    // mandelbrot does not memcpy before the kernel launch, so single barrier
+    // for both uvm and pageable
+    if (is_barrier) {
+        int sval;
+        sem_post(sem);
+        sem_getvalue(sem, &sval);
+        while (sval == 1) {
+            sem_getvalue(sem, &sval);
+        }
+        printf("[Barrier] Kernel starts\n");
+    }
 
 	// compute the dwells, copy them back
 	dim3 bs(64, 4), grid(divup(w, bs.x), divup(h, bs.y));
@@ -589,7 +610,7 @@ void mandelbrot(ResultDatabase &resultDB, OptionParser &op, int size, int MAX_DW
 		checkCudaErrors(cudaMemAdvise(h_dwells, dwell_sz, cudaMemAdviseSetReadMostly, cudaCpuDeviceId));
 		checkCudaErrors(cudaMemAdvise(h_dwells, dwell_sz, cudaMemAdviseSetPreferredLocation, cudaCpuDeviceId));
 		checkCudaErrors(cudaMemPrefetchAsync(h_dwells, dwell_sz, device));
-	} else {
+	} else if (pageable || copy) {
 		checkCudaErrors(cudaMemcpy(h_dwells, d_dwells, dwell_sz, cudaMemcpyDeviceToHost));
 	}
     checkCudaErrors(cudaEventRecord(stop, 0));
@@ -599,9 +620,11 @@ void mandelbrot(ResultDatabase &resultDB, OptionParser &op, int size, int MAX_DW
 
 	// free data
 	checkCudaErrors(cudaFree(d_dwells));
-	if (!uvm && !uvm_prefetch && !uvm_advise && !uvm_prefetch_advise) {
+	if (!uvm && !uvm_prefetch && !uvm_advise && !uvm_prefetch_advise && !copy) {
 		free(h_dwells);
-	}
+	} else if (copy) {
+        cudaFreeHost(h_dwells);
+    }
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -708,7 +731,8 @@ void addBenchmarkSpecOptions(OptionParser &op) {
 /// @param [in,out]	op			The operation. 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-void RunBenchmark(ResultDatabase &resultDB, OptionParser &op) {
+//void RunBenchmark(ResultDatabase &resultDB, OptionParser &op) {
+void RunBenchmark(ResultDatabase &resultDB, OptionParser &op, ofstream &ofile, sem_t *sem) {
     printf("Running Mandelbrot\n");
 
     checkCudaErrors(cudaEventCreate(&start));
@@ -718,6 +742,7 @@ void RunBenchmark(ResultDatabase &resultDB, OptionParser &op) {
     int imageSize = op.getOptionInt("imageSize");
     int iters = op.getOptionInt("iterations");
 	bool dyn = op.getOptionBool("dyn");
+    string bench_name = op.getOptionString("bench");
     if (imageSize == 0 || iters == 0) {
         int imageSizes[5] = {2 << 11, 2 << 12, 2 << 13, 2 << 14, 2 << 14};
         int iterSizes[5] = {32, 128, 512, 1024, 8192*16};
@@ -743,12 +768,14 @@ void RunBenchmark(ResultDatabase &resultDB, OptionParser &op) {
 
         kernelTime = 0.0f;
         transferTime = 0.0f;
-        mandelbrot(resultDB, op, imageSize, iters);
+        mandelbrot(resultDB, op, imageSize, iters, sem);
         resultDB.AddResult("mandelbrot_kernel_time", atts, "sec", kernelTime);
         resultDB.AddResult("mandelbrot_transfer_time", atts, "sec", transferTime);
         resultDB.AddResult("mandelbrot_total_time", atts, "sec", transferTime + kernelTime);
         resultDB.AddResult("mandelbrot_parity", atts, "N", transferTime / kernelTime);
         resultDB.AddOverall("Time", "sec", kernelTime+transferTime);
+
+        ofile << bench_name << ", " << transferTime + kernelTime << ", " << endl;
 		if (dyn) {
 			float totalTime = kernelTime;
 			kernelTime = 0.0f;

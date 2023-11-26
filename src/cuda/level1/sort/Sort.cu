@@ -64,14 +64,21 @@ void addBenchmarkSpecOptions(OptionParser &op) {}
 // Add UVM support
 //
 // ****************************************************************************
-void RunBenchmark(ResultDatabase &resultDB, OptionParser &op) {
+//void RunBenchmark(ResultDatabase &resultDB, OptionParser &op) {
+void RunBenchmark(ResultDatabase &resultDB, OptionParser &op, ofstream &ofile, sem_t *sem) {
     cout << "Running Sort" << endl;
   srand(SEED);
   bool quiet = op.getOptionBool("quiet");
   const bool uvm = op.getOptionBool("uvm");
+  const bool copy = op.getOptionBool("copy");
+  const bool dha = op.getOptionBool("dha");
+  const bool pageable = op.getOptionBool("pageable");
+  const bool uvm_copy = op.getOptionBool("uvm-copy");
   const bool uvm_prefetch = op.getOptionBool("uvm-prefetch");
   const bool uvm_advise = op.getOptionBool("uvm-advise");
   const bool uvm_prefetch_advise = op.getOptionBool("uvm-prefetch-advise");
+  const bool is_barrier = op.getOptionBool("sem");
+  string bench_name = op.getOptionString("bench");
   int device = 0;
   checkCudaErrors(cudaGetDevice(&device));
 
@@ -106,6 +113,9 @@ void RunBenchmark(ResultDatabase &resultDB, OptionParser &op) {
   uint *hKeys = NULL;
   uint *hVals = NULL;
 
+  // Allocate device mem for sorting kernels
+  uint *dKeys, *dVals, *dTempKeys, *dTempVals;
+
   ////////////////////////////////////////////////////////////////////////////////////////////////////
   /// <summary>	allocate using UVM API. </summary>
   ///
@@ -116,9 +126,15 @@ void RunBenchmark(ResultDatabase &resultDB, OptionParser &op) {
   if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise) {
       checkCudaErrors(cudaMallocManaged(&hKeys, bytes));
       checkCudaErrors(cudaMallocManaged(&hVals, bytes));
-  } else {
+  } else if (copy) {
       checkCudaErrors(cudaMallocHost((void **)&hKeys, bytes));
       checkCudaErrors(cudaMallocHost((void **)&hVals, bytes));
+  } else if (dha) {
+      checkCudaErrors(cudaMallocHost((void **)&dKeys, bytes));
+      checkCudaErrors(cudaMallocHost((void **)&dVals, bytes));
+  } else if (pageable) {
+      hKeys = (uint *)malloc(bytes);
+      hVals = (uint *)malloc(bytes);
   }
 
   // Allocate space for block sums in the scan kernel.
@@ -167,19 +183,17 @@ void RunBenchmark(ResultDatabase &resultDB, OptionParser &op) {
 
   if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise) {
     checkCudaErrors(cudaMallocManaged((void **)&(scanBlockSums[level]), sizeof(uint)));
-  } else {
+  } else if (copy || pageable) {
     checkCudaErrors(cudaMalloc((void **)&(scanBlockSums[level]), sizeof(uint)));
   }
 
-  // Allocate device mem for sorting kernels
-  uint *dKeys, *dVals, *dTempKeys, *dTempVals;
 
   if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise) {
     dKeys = hKeys;
     dVals = hVals;
     checkCudaErrors(cudaMallocManaged((void **)&dTempKeys, bytes));
     checkCudaErrors(cudaMallocManaged((void **)&dTempVals, bytes));
-  } else {
+  } else if (copy || pageable) {
     checkCudaErrors(cudaMalloc((void **)&dKeys, bytes));
     checkCudaErrors(cudaMalloc((void **)&dVals, bytes));
     checkCudaErrors(cudaMalloc((void **)&dTempKeys, bytes));
@@ -198,7 +212,7 @@ void RunBenchmark(ResultDatabase &resultDB, OptionParser &op) {
     checkCudaErrors(cudaMallocManaged((void **)&dBlockOffsets,
                               WARP_SIZE * numSortGroups * sizeof(uint)));
   }
-  else {
+  else if (copy || pageable) {
     checkCudaErrors(cudaMalloc((void **)&dCounters,
                               WARP_SIZE * numSortGroups * sizeof(uint)));
     checkCudaErrors(cudaMalloc((void **)&dCounterSums,
@@ -228,19 +242,22 @@ void RunBenchmark(ResultDatabase &resultDB, OptionParser &op) {
 
     // Copy inputs to GPU
     double transferTime = 0.;
-    checkCudaErrors(cudaEventRecord(start, 0));
     if (uvm) {
       // do nothing
+        checkCudaErrors(cudaEventRecord(start, 0));
     } else if (uvm_advise) {
+        checkCudaErrors(cudaEventRecord(start, 0));
       checkCudaErrors(cudaMemAdvise(dKeys, bytes, cudaMemAdviseSetPreferredLocation, device));
       checkCudaErrors(cudaMemAdvise(dVals, bytes, cudaMemAdviseSetPreferredLocation, device));
     } else if (uvm_prefetch) {
+        checkCudaErrors(cudaEventRecord(start, 0));
       checkCudaErrors(cudaMemPrefetchAsync(dKeys, bytes, device));
       cudaStream_t s1;
       checkCudaErrors(cudaStreamCreate(&s1));
       checkCudaErrors(cudaMemPrefetchAsync(dVals, bytes, device, s1));
       checkCudaErrors(cudaStreamDestroy(s1));
     } else if (uvm_prefetch_advise) {
+        checkCudaErrors(cudaEventRecord(start, 0));
       checkCudaErrors(cudaMemAdvise(dKeys, bytes, cudaMemAdviseSetPreferredLocation, device));
       checkCudaErrors(cudaMemAdvise(dVals, bytes, cudaMemAdviseSetPreferredLocation, device));
       checkCudaErrors(cudaMemPrefetchAsync(dKeys, bytes, device));
@@ -248,7 +265,18 @@ void RunBenchmark(ResultDatabase &resultDB, OptionParser &op) {
       checkCudaErrors(cudaStreamCreate(&s1));
       checkCudaErrors(cudaMemPrefetchAsync(dVals, bytes, device, (cudaStream_t)1));
       checkCudaErrors(cudaStreamDestroy(s1));
-    } else {
+    } else if (copy || pageable) {
+        // (taeklim): Waiting for the other apps before copying
+        if (is_barrier && pageable) {
+            int sval;
+            sem_post(sem);
+            sem_getvalue(sem, &sval);
+            while (sval == 1) {
+                sem_getvalue(sem, &sval);
+            }
+            printf("[Barrier] Copying starts\n");
+        }
+        checkCudaErrors(cudaEventRecord(start, 0));
         checkCudaErrors(cudaMemcpy(dKeys, hKeys, bytes, cudaMemcpyHostToDevice));
         checkCudaErrors(cudaMemcpy(dVals, hVals, bytes, cudaMemcpyHostToDevice));
     }
@@ -258,7 +286,19 @@ void RunBenchmark(ResultDatabase &resultDB, OptionParser &op) {
     checkCudaErrors(cudaEventElapsedTime(&elapsedTime, start, stop));
     transferTime += elapsedTime * 1.e-3; // convert to seconds
 
+    // (taeklim): Waiting for the other apps finishes the initialization
+    if (is_barrier && uvm) {
+        int sval;
+        sem_post(sem);
+        sem_getvalue(sem, &sval);
+        while (sval == 1) {
+            sem_getvalue(sem, &sval);
+        }
+        printf("[Barrier] Kernel starts\n");
+    }
+
     checkCudaErrors(cudaEventRecord(start, 0));
+
     // Perform Radix Sort (4 bits at a time)
     for (int i = 0; i < SORT_BITS; i += 4) {
       radixSortStep(4, i, (uint4 *)dKeys, (uint4 *)dVals, (uint4 *)dTempKeys,
@@ -286,7 +326,7 @@ void RunBenchmark(ResultDatabase &resultDB, OptionParser &op) {
       checkCudaErrors(cudaMemAdvise(dVals, bytes, cudaMemAdviseSetPreferredLocation, cudaCpuDeviceId));
       checkCudaErrors(cudaMemPrefetchAsync(dKeys, bytes, cudaCpuDeviceId));
       checkCudaErrors(cudaMemPrefetchAsync(dVals, bytes, cudaCpuDeviceId, (cudaStream_t)1));
-    } else {
+    } else if (copy || pageable) {
       checkCudaErrors(cudaMemcpy(hKeys, dKeys, bytes, cudaMemcpyDeviceToHost));
       checkCudaErrors(cudaMemcpy(hVals, dVals, bytes, cudaMemcpyDeviceToHost));
     }
@@ -296,6 +336,8 @@ void RunBenchmark(ResultDatabase &resultDB, OptionParser &op) {
     checkCudaErrors(cudaEventElapsedTime(&elapsedTime, start, stop));
     transferTime += elapsedTime * 1.e-3;
 
+    double totalTime = transferTime + kernelTime;
+
     // Test to make sure data was sorted properly, if not, return
     if (!verifySort(hKeys, hVals, size, op.getOptionBool("verbose"), op.getOptionBool("quiet"))) {
       return;
@@ -304,15 +346,19 @@ void RunBenchmark(ResultDatabase &resultDB, OptionParser &op) {
     char atts[1024];
     sprintf(atts, "%ditems", size);
     double gb = (bytes * 2.) / (1000. * 1000. * 1000.);
+
+    ofile << bench_name << ", " << totalTime << ", " << endl;
+
+    resultDB.AddResult("Sort-TotalTime", atts, "sec", totalTime);
     resultDB.AddResult("Sort-KernelTime", atts, "sec", kernelTime);
-    resultDB.AddResult("Sort-TransferTime", atts, "sec", transferTime);
-    resultDB.AddResult("Sort-TotalTime", atts, "sec", transferTime + kernelTime);
-    resultDB.AddResult("Sort-Rate", atts, "GB/s", gb / kernelTime);
-    resultDB.AddResult("Sort-Rate_PCIe", atts, "GB/s",
-                       gb / (kernelTime + transferTime));
-    resultDB.AddResult("Sort-Rate_Parity", atts, "N",
-                       transferTime / kernelTime);
-    resultDB.AddOverall("Rate", "GB/s", gb/kernelTime);
+//    resultDB.AddResult("Sort-TransferTime", atts, "sec", transferTime);
+//    resultDB.AddResult("Sort-TotalTime", atts, "sec", transferTime + kernelTime);
+//    resultDB.AddResult("Sort-Rate", atts, "GB/s", gb / kernelTime);
+//    resultDB.AddResult("Sort-Rate_PCIe", atts, "GB/s",
+//                       gb / (kernelTime + transferTime));
+//    resultDB.AddResult("Sort-Rate_Parity", atts, "N",
+//                       transferTime / kernelTime);
+//    resultDB.AddOverall("Rate", "GB/s", gb/kernelTime);
   }
   // Clean up
   for (int i = 0; i < numLevelsAllocated; i++) {
@@ -330,10 +376,14 @@ void RunBenchmark(ResultDatabase &resultDB, OptionParser &op) {
 
   if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise) {
     checkCudaErrors(cudaFree(scanBlockSums));
-  } else {
+  } else if (copy) {
     free(scanBlockSums);
     checkCudaErrors(cudaFreeHost(hKeys));
     checkCudaErrors(cudaFreeHost(hVals));
+  } else if (pageable) {
+    free(scanBlockSums);
+    free(hKeys);
+    free(hVals);
   }
   free(sourceInput);
 }

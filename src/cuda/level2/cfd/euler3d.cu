@@ -383,7 +383,7 @@ void dealloc(T* array)
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 template <typename T>
-void copy(T* dst, T* src, int N, cudaStream_t *stream)
+void copy_(T* dst, T* src, int N, cudaStream_t *stream)
 {
     cudaEventRecord(start, 0);
 	checkCudaErrors(cudaMemcpyAsync((void*)dst, (void*)src, N*sizeof(T), cudaMemcpyDeviceToDevice, *stream));
@@ -980,7 +980,7 @@ void addBenchmarkSpecOptions(OptionParser &op) {
 /// <param name="op">	   	[in,out] The operation. </param>
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-void cfd(ResultDatabase &resultDB, OptionParser &op);
+void cfd(ResultDatabase &resultDB, OptionParser &op, ofstream &ofile, sem_t *sem);
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 /// <summary>	Executes the benchmark operation. </summary>
@@ -991,7 +991,7 @@ void cfd(ResultDatabase &resultDB, OptionParser &op);
 /// <param name="op">	   	[in,out] The operation. </param>
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-void RunBenchmark(ResultDatabase &resultDB, OptionParser &op) {
+void RunBenchmark(ResultDatabase &resultDB, OptionParser &op, ofstream &ofile, sem_t *sem) {
     printf("Running CFDSolver\n");
     bool quiet = op.getOptionBool("quiet");
     if(!quiet) {
@@ -1008,7 +1008,7 @@ void RunBenchmark(ResultDatabase &resultDB, OptionParser &op) {
         if(!quiet) {
             printf("Pass %d:\n", i);
         }
-        cfd(resultDB, op);
+        cfd(resultDB, op, ofile, sem);
         if(!quiet) {
             printf("Done.\n");
         }
@@ -1024,8 +1024,15 @@ void RunBenchmark(ResultDatabase &resultDB, OptionParser &op) {
 /// <param name="op">	   	[in,out] The operation. </param>
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-void cfd(ResultDatabase &resultDB, OptionParser &op)
+void cfd(ResultDatabase &resultDB, OptionParser &op, ofstream &ofile, sem_t *sem)
 {
+	bool uvm = op.getOptionBool("uvm");
+	bool uvm_prefetch = op.getOptionBool("uvm-prefetch");
+	bool pageable = op.getOptionBool("pageable");
+	bool copy = op.getOptionBool("copy");
+    const bool is_barrier = op.getOptionBool("sem");
+    string bench_name = op.getOptionString("bench");
+
 	// set far field conditions and load them into constant memory on the gpu
 	{
 		float h_ff_variable[NVAR];
@@ -1058,7 +1065,16 @@ void cfd(ResultDatabase &resultDB, OptionParser &op)
 		float3 h_ff_flux_contribution_density_energy;
 		compute_flux_contribution(h_ff_variable[VAR_DENSITY], h_ff_momentum, h_ff_variable[VAR_DENSITY_ENERGY], ff_pressure, ff_velocity, h_ff_flux_contribution_momentum_x, h_ff_flux_contribution_momentum_y, h_ff_flux_contribution_momentum_z, h_ff_flux_contribution_density_energy);
 
-		// copy far field conditions to the gpu
+        // copy far field conditions to the gpu
+        if (is_barrier && pageable) {
+            int sval;
+            sem_post(sem);
+            sem_getvalue(sem, &sval);
+            while (sval == 1) {
+                sem_getvalue(sem, &sval);
+            }
+            printf("[Barrier] Copying starts\n");
+        }
         cudaEventRecord(start, 0);
 
 		checkCudaErrors( cudaMemcpyToSymbol(ff_variable,          h_ff_variable,          NVAR*sizeof(float)) );
@@ -1073,7 +1089,7 @@ void cfd(ResultDatabase &resultDB, OptionParser &op)
         transferTime += elapsed * 1.e-3;
 	}
 
-	bool uvm = op.getOptionBool("uvm");
+
 	int nel;
 	int nelr;
 	
@@ -1096,13 +1112,18 @@ void cfd(ResultDatabase &resultDB, OptionParser &op)
 		float *h_areas = NULL;
 		int *h_elements_surrounding_elements = NULL;
 		float *h_normals = NULL;
-		if (uvm) {
+		if (uvm || uvm_prefetch) {
 			// could use prefetch and advise
 			checkCudaErrors(cudaMallocManaged(&h_areas, nelr * sizeof(float)));
 			checkCudaErrors(cudaMallocManaged(&h_elements_surrounding_elements,
 									nelr * NNB * sizeof(int)));
 			checkCudaErrors(cudaMallocManaged(&h_normals, nelr * NDIM * NNB * sizeof(float)));
-		} else {
+		} else if (copy) {
+			checkCudaErrors(cudaMallocHost(&h_areas, nelr * sizeof(float)));
+			checkCudaErrors(cudaMallocHost(&h_elements_surrounding_elements,
+									nelr * NNB * sizeof(int)));
+			checkCudaErrors(cudaMallocHost(&h_normals, nelr * NDIM * NNB * sizeof(float)));
+		} else if (pageable) {
 			h_areas = new float[nelr];
 			h_elements_surrounding_elements = new int[nelr*NNB];
 			h_normals = new float[nelr*NDIM*NNB];
@@ -1158,7 +1179,23 @@ void cfd(ResultDatabase &resultDB, OptionParser &op)
 			areas = h_areas;
 			elements_surrounding_elements = h_elements_surrounding_elements;
 			normals = h_normals;
-		} else {
+		} else if (uvm_prefetch) {
+			areas = h_areas;
+			elements_surrounding_elements = h_elements_surrounding_elements;
+			normals = h_normals;
+            checkCudaErrors(cudaMemPrefetchAsync(areas, sizeof(float) * nelr, 0));
+            checkCudaErrors(cudaMemPrefetchAsync(elements_surrounding_elements, sizeof(int) * nelr * NNB, 0));
+            checkCudaErrors(cudaMemPrefetchAsync(normals, sizeof(float) * nelr * NDIM * NNB, 0));
+        } else if (copy) {
+			areas = alloc<float>(nelr);
+			upload<float>(areas, h_areas, nelr);
+
+			elements_surrounding_elements = alloc<int>(nelr*NNB);
+			upload<int>(elements_surrounding_elements, h_elements_surrounding_elements, nelr*NNB);
+
+			normals = alloc<float>(nelr*NDIM*NNB);
+			upload<float>(normals, h_normals, nelr*NDIM*NNB);
+		} else if (pageable) {
 			areas = alloc<float>(nelr);
 			upload<float>(areas, h_areas, nelr);
 
@@ -1171,27 +1208,29 @@ void cfd(ResultDatabase &resultDB, OptionParser &op)
 			delete[] h_areas;
 			delete[] h_elements_surrounding_elements;
 			delete[] h_normals;
-		}
+
+        }
 	}
 
 	// Create arrays and set initial conditions
 	float *variables = NULL;
-	if (uvm) {
+	if (uvm || uvm_prefetch) {
 		checkCudaErrors(cudaMallocManaged(&variables, nelr*NVAR*sizeof(float)));
-	} else {
+	} else if (copy || pageable) {
 		variables = alloc<float>(nelr*NVAR);
 	}
 
+    printf("Start initialization\n");
 	initialize_variables(nelr, variables);
 
 	float *old_variables = NULL;
 	float *fluxes = NULL;
 	float *step_factors = NULL;
-	if (uvm) {
+	if (uvm || uvm_prefetch) {
 		checkCudaErrors(cudaMallocManaged(&old_variables, nelr*NVAR*sizeof(float)));
 		checkCudaErrors(cudaMallocManaged(&fluxes, nelr*NVAR*sizeof(float)));
 		checkCudaErrors(cudaMallocManaged(&step_factors, nelr*sizeof(float)));
-	} else {
+	} else if (copy || pageable) {
 		old_variables = alloc<float>(nelr*NVAR);   	
 		fluxes = alloc<float>(nelr*NVAR);
 		step_factors = alloc<float>(nelr);
@@ -1225,7 +1264,7 @@ void cfd(ResultDatabase &resultDB, OptionParser &op)
 	for (int i = 0; i < iterations; i++) {
         // Time will need to be recomputed, more aggressive optimization TODO
 		checkCudaErrors(cudaStreamWaitEvent(streams[1], exec_event, 0));
-		copy<float>(old_variables, variables, nelr*NVAR, &streams[1]);
+		copy_<float>(old_variables, variables, nelr*NVAR, &streams[1]);
 		checkCudaErrors(cudaEventRecord(copy_event, streams[1]));
 	
 		// for the first iteration we compute the time step
@@ -1251,7 +1290,7 @@ void cfd(ResultDatabase &resultDB, OptionParser &op)
 	    dump(variables, nel, nelr);
     }
 
-	if (uvm) {
+	if (uvm || uvm_prefetch) {
 		checkCudaErrors(cudaFree(areas));
 		checkCudaErrors(cudaFree(elements_surrounding_elements));
 		checkCudaErrors(cudaFree(normals));
@@ -1259,7 +1298,7 @@ void cfd(ResultDatabase &resultDB, OptionParser &op)
 		checkCudaErrors(cudaFree(old_variables));
 		checkCudaErrors(cudaFree(fluxes));
 		checkCudaErrors(cudaFree(step_factors));
-	} else {
+	} else if (pageable || copy) {
 		dealloc<float>(areas);
 		dealloc<int>(elements_surrounding_elements);
 		dealloc<float>(normals);
@@ -1268,7 +1307,15 @@ void cfd(ResultDatabase &resultDB, OptionParser &op)
 		dealloc<float>(old_variables);
 		dealloc<float>(fluxes);
 		dealloc<float>(step_factors);
-	}
+	} else if (copy) {
+        checkCudaErrors(cudaFreeHost(areas));
+        checkCudaErrors(cudaFreeHost(elements_surrounding_elements));
+        checkCudaErrors(cudaFreeHost(normals));
+		dealloc<float>(variables);
+		dealloc<float>(old_variables);
+		dealloc<float>(fluxes);
+		dealloc<float>(step_factors);
+    }
 	
 	for (int s = 0; s < NUM_STREAMS; s++) {
         checkCudaErrors(cudaStreamDestroy(streams[s]));
@@ -1278,6 +1325,8 @@ void cfd(ResultDatabase &resultDB, OptionParser &op)
     sprintf(atts, "numelements:%d", nel);
     resultDB.AddResult("cfd_kernel_time", atts, "sec", kernelTime);
     resultDB.AddResult("cfd_transfer_time", atts, "sec", transferTime);
+    resultDB.AddResult("cfd_total_time", atts, "sec", kernelTime + transferTime);
     resultDB.AddResult("cfd_parity", atts, "N", transferTime / kernelTime);
     resultDB.AddOverall("Time", "sec", kernelTime+transferTime);
+    ofile << bench_name << ", " << kernelTime + transferTime << ", " << endl;
 }

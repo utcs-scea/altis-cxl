@@ -1080,7 +1080,7 @@ void addBenchmarkSpecOptions(OptionParser &op) {
 
 void particlefilter_float(ResultDatabase &resultDB, int args[], bool useGraph);
 
-void RunBenchmark(ResultDatabase &resultDB, OptionParser &op) {
+void RunBenchmark(ResultDatabase &resultDB, OptionParser &op, ofstream &ofile, sem_t *sem) {
     printf("Running ParticleFilter (float)\n");
     int args[4];
     args[0] = op.getOptionInt("dimx");
