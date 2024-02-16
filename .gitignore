@@ -1,3 +1,8 @@
+*.log
+*.nsys-rep
+*.json
+ncu-results
+
 build
 *.vscode*
 *.o
@@ -62,6 +67,8 @@ data/bfs/bfs_1048576
 data/bfs/bfs_2097152
 data/bfs/bfs_4194304
 data/bfs/bfs_8388608
+data/bfs/bfs_16777216
+data/bfs/*
 
 src/cuda/level2/dwt2d/input.bmp
 src/cuda/level2/dwt2d/input.bmp.dwt.b

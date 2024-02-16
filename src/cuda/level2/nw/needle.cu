@@ -171,6 +171,7 @@ void RunBenchmark(ResultDatabase &resultDB, OptionParser &op, ofstream &ofile, s
 
 void runTest(ResultDatabase &resultDB, OptionParser &op, ofstream &ofile, sem_t *sem) {
   bool uvm = op.getOptionBool("uvm");
+  bool zero_copy = op.getOptionBool("zero-copy");
   bool uvm_prefetch = op.getOptionBool("uvm-prefetch");
   bool copy = op.getOptionBool("copy");
   bool quiet = op.getOptionBool("quiet");
@@ -186,7 +187,7 @@ void runTest(ResultDatabase &resultDB, OptionParser &op, ofstream &ofile, sem_t 
   max_rows = max_rows + 1;
   max_cols = max_cols + 1;
   
-  if (uvm || uvm_prefetch) {
+  if (uvm || uvm_prefetch || zero_copy) {
     checkCudaErrors(cudaMallocManaged(&referrence, max_rows * max_cols * sizeof(int)));
     checkCudaErrors(cudaMallocManaged(&input_itemsets, max_rows * max_cols * sizeof(int)));
   } else if (copy) {
@@ -237,12 +238,12 @@ void runTest(ResultDatabase &resultDB, OptionParser &op, ofstream &ofile, sem_t 
 
   size = max_cols * max_rows;
 
-  if (uvm || uvm_prefetch) {
+  if (uvm || uvm_prefetch || zero_copy) {
     // Do nothing
   } else if (copy || pageable) {
     checkCudaErrors(cudaMalloc((void **)&referrence_cuda, sizeof(int) * size));
     checkCudaErrors(cudaMalloc((void **)&matrix_cuda, sizeof(int) * size));
-  } 
+  }
 
   cudaEvent_t start, stop;
   cudaEventCreate(&start);
@@ -255,23 +256,28 @@ void runTest(ResultDatabase &resultDB, OptionParser &op, ofstream &ofile, sem_t 
   // Notice that here we used demand paging so no cpy time included, could also use HyperQ
   if (uvm) {
       cudaEventRecord(start, 0);
-    referrence_cuda = referrence;
-    matrix_cuda = input_itemsets;
+      referrence_cuda = referrence;
+      matrix_cuda = input_itemsets;
+  } else if (zero_copy) {
+      cudaEventRecord(start, 0);
+      referrence_cuda = referrence;
+      matrix_cuda = input_itemsets;
+      checkCudaErrors(cudaMemAdvise(referrence_cuda, sizeof(int) * size , cudaMemAdviseSetAccessedBy, 0));
   } else if (uvm_prefetch) {
       cudaEventRecord(start, 0);
-    referrence_cuda = referrence;
-    matrix_cuda = input_itemsets;
+      referrence_cuda = referrence;
+      matrix_cuda = input_itemsets;
       checkCudaErrors(cudaMemPrefetchAsync(referrence_cuda, sizeof(int) * size , device));
       cudaStream_t s1;
       checkCudaErrors(cudaStreamCreate(&s1));
       checkCudaErrors(cudaMemPrefetchAsync(matrix_cuda, sizeof(int) * size , device, s1));
       checkCudaErrors(cudaStreamDestroy(s1));
   } else if (copy || pageable) {
-    if (is_barrier && pageable) {
-        int sval;
-        sem_post(sem);
-        sem_getvalue(sem, &sval);
-        while (sval == 1) {
+      if (is_barrier && pageable) {
+          int sval;
+          sem_post(sem);
+          sem_getvalue(sem, &sval);
+          while (sval == 1) {
             sem_getvalue(sem, &sval);
         }
         printf("[Barrier] Copying starts\n");
@@ -420,7 +426,7 @@ void runTest(ResultDatabase &resultDB, OptionParser &op, ofstream &ofile, sem_t 
   printf("Done output...\n");
 
   // Cleanup memory
-  if (uvm || uvm_prefetch) {
+  if (uvm || uvm_prefetch || zero_copy) {
     checkCudaErrors(cudaFree(referrence_cuda));
     checkCudaErrors(cudaFree(matrix_cuda));
   } else if (copy) {

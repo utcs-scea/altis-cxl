@@ -307,6 +307,7 @@ void fdtdCudaUnifiedMemory(size_t NX, size_t NY, size_t tmax, DATA_TYPE* _fict_,
     ResultDatabase &DB, OptionParser &op, ofstream &ofile, sem_t *sem)
 {
     const bool uvm = op.getOptionBool("uvm");
+    const bool zero_copy = op.getOptionBool("zero-copy");
     const bool uvm_advise = op.getOptionBool("uvm-advise");
     const bool uvm_prefetch = op.getOptionBool("uvm-prefetch");
     const bool uvm_prefetch_advise = op.getOptionBool("uvm-prefetch-advise");
@@ -339,12 +340,14 @@ void fdtdCudaUnifiedMemory(size_t NX, size_t NY, size_t tmax, DATA_TYPE* _fict_,
 
     t_start = rtclock();
 
-    if (uvm)
-    {
+    if (uvm) {
         // Do nothing
-    }
-    else if (uvm_advise)
-    {
+    } else if (zero_copy) {
+        checkCudaErrors(cudaMemAdvise(_fict_gpu, sizeof(DATA_TYPE) * tmax, cudaMemAdviseSetAccessedBy, 0));
+        checkCudaErrors(cudaMemAdvise(ex_gpu, sizeof(DATA_TYPE) * NX * (NY + 1), cudaMemAdviseSetAccessedBy, 0));
+        checkCudaErrors(cudaMemAdvise(ey_gpu, sizeof(DATA_TYPE) * (NX + 1) * NY, cudaMemAdviseSetAccessedBy, 0));
+        checkCudaErrors(cudaMemAdvise(hz_gpu, sizeof(DATA_TYPE) * NX * NY, cudaMemAdviseSetAccessedBy, 0));
+    } else if (uvm_advise) {
         checkCudaErrors(cudaMemAdvise(_fict_gpu, sizeof(DATA_TYPE) * tmax, cudaMemAdviseSetReadMostly, device));
         checkCudaErrors(cudaMemAdvise(_fict_gpu, sizeof(DATA_TYPE) * tmax, cudaMemAdviseSetPreferredLocation, device));
         checkCudaErrors(cudaMemAdvise(_fict_gpu, sizeof(DATA_TYPE) * tmax, cudaMemAdviseSetAccessedBy, device));
@@ -439,8 +442,7 @@ void fdtdCudaUnifiedMemory(size_t NX, size_t NY, size_t tmax, DATA_TYPE* _fict_,
     // Do nothing
     }
 
-    if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise)
-    {
+    if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise) {
         checkCudaErrors(cudaMemAdvise(hz_gpu, sizeof(DATA_TYPE) * NX * NY, cudaMemAdviseSetReadMostly, cudaCpuDeviceId));
         checkCudaErrors(cudaMemAdvise(hz_gpu, sizeof(DATA_TYPE) * NX * NY, cudaMemAdviseSetPreferredLocation, cudaCpuDeviceId));
         checkCudaErrors(cudaMemAdvise(hz_gpu, sizeof(DATA_TYPE) * NX * NY, cudaMemAdviseSetAccessedBy, cudaCpuDeviceId));
@@ -465,6 +467,7 @@ void RunBenchmark(ResultDatabase &DB, OptionParser &op, ofstream &ofile, sem_t *
     const bool copy = op.getOptionBool("copy");
     const bool pageable = op.getOptionBool("pageable");
 
+    const bool zero_copy = op.getOptionBool("zero-copy");
     const bool uvm_advise = op.getOptionBool("uvm-advise");
     const bool uvm_prefetch = op.getOptionBool("uvm-prefetch");
     const bool uvm_prefetch_advise = op.getOptionBool("uvm-prefetch-advise");
@@ -490,7 +493,7 @@ void RunBenchmark(ResultDatabase &DB, OptionParser &op, ofstream &ofile, sem_t *
 
     if (compare)
     {
-        if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise)
+        if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise || zero_copy)
         {
             DATA_TYPE* _fict_gpu;
             DATA_TYPE* ex_gpu;
@@ -580,7 +583,7 @@ void RunBenchmark(ResultDatabase &DB, OptionParser &op, ofstream &ofile, sem_t *
         }
     }
     else {
-        if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise) {
+        if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise || zero_copy) {
             checkCudaErrors(cudaMallocManaged(&_fict_, tmax*sizeof(DATA_TYPE)));
             checkCudaErrors(cudaMallocManaged(&ex, NX*(NY+1)*sizeof(DATA_TYPE)));
             checkCudaErrors(cudaMallocManaged(&ey, (NX+1)*NY*sizeof(DATA_TYPE)));

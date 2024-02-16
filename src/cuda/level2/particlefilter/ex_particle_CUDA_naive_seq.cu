@@ -608,6 +608,7 @@ int findIndex(double * CDF, int lengthCDF, double value){
 
 void particleFilter(int * I, int IszX, int IszY, int Nfr, int * seed, int Nparticles, OptionParser &op, ResultDatabase &resultDB, ofstream &ofile, sem_t *sem) {
 	const bool uvm = op.getOptionBool("uvm");
+	const bool zero_copy = op.getOptionBool("zero-copy");
 	const bool copy = op.getOptionBool("copy");
 	const bool pageable = op.getOptionBool("pageable");
     const bool uvm_advise = op.getOptionBool("uvm-advise");
@@ -635,7 +636,7 @@ void particleFilter(int * I, int IszX, int IszY, int Nfr, int * seed, int Nparti
 	int radius = 5;
 	int diameter = radius*2 - 1;
 	int *disk = NULL;
-	if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise) {
+	if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise || zero_copy) {
 		checkCudaErrors(cudaMallocManaged(&disk, diameter * diameter * sizeof(int)));
 	} else if (copy) {
 		checkCudaErrors(cudaMallocHost(&disk, diameter * diameter * sizeof(int)));
@@ -653,7 +654,7 @@ void particleFilter(int * I, int IszX, int IszY, int Nfr, int * seed, int Nparti
 		}
 	}
 	double *objxy = NULL;
-	if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise) {
+	if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise || zero_copy) {
 		checkCudaErrors(cudaMallocManaged(&objxy, countOnes*2*sizeof(double)));
     } else if (copy) {
 		checkCudaErrors(cudaMallocHost(&objxy, countOnes*2*sizeof(double)));
@@ -665,7 +666,7 @@ void particleFilter(int * I, int IszX, int IszY, int Nfr, int * seed, int Nparti
 	
 	//initial weights are all equal (1/Nparticles)
 	double *weights = NULL;
-	if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise) {
+	if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise || zero_copy) {
 		checkCudaErrors(cudaMallocManaged(&weights, sizeof(double) * Nparticles));
 	} else if (copy) {
 		checkCudaErrors(cudaMallocHost(&weights, sizeof(double) * Nparticles));
@@ -683,7 +684,7 @@ void particleFilter(int * I, int IszX, int IszY, int Nfr, int * seed, int Nparti
 	double *xj = NULL;
 	double *yj = NULL;
 	double *CDF = NULL;
-	if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise) {
+	if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise || zero_copy) {
 		checkCudaErrors(cudaMallocManaged(&likelihood, sizeof(double) * Nparticles));
 		checkCudaErrors(cudaMallocManaged(&arrayX, sizeof(double) * Nparticles));
 		checkCudaErrors(cudaMallocManaged(&arrayY, sizeof(double) * Nparticles));
@@ -715,7 +716,7 @@ void particleFilter(int * I, int IszX, int IszY, int Nfr, int * seed, int Nparti
 	//GPU copies of arrays
 	int *ind = NULL;
 	double *u = NULL;
-	if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise) {
+	if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise || zero_copy) {
 		checkCudaErrors(cudaMallocManaged(&ind, sizeof(int) * countOnes));
 		checkCudaErrors(cudaMallocManaged(&u, sizeof(double) * Nparticles));
 	} else if (copy) {
@@ -736,7 +737,7 @@ void particleFilter(int * I, int IszX, int IszY, int Nfr, int * seed, int Nparti
 	double * u_GPU;
 	
 	//CUDA memory allocation
-	if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise) {
+	if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise || zero_copy) {
 		arrayX_GPU = arrayX;
 		arrayY_GPU = arrayY;
 		xj_GPU = xj;
@@ -833,6 +834,17 @@ void particleFilter(int * I, int IszX, int IszY, int Nfr, int * seed, int Nparti
 		// Use demand paging, or hyperq async cpy
 		if (uvm) {
 
+		} else if (zero_copy) {
+			checkCudaErrors(cudaMemAdvise(arrayX_GPU, sizeof(double)*Nparticles, cudaMemAdviseSetAccessedBy, 0));
+			checkCudaErrors(cudaMemAdvise(arrayX_GPU, sizeof(double)*Nparticles, cudaMemAdviseSetAccessedBy, 0));
+			checkCudaErrors(cudaMemAdvise(arrayY_GPU, sizeof(double)*Nparticles, cudaMemAdviseSetAccessedBy, 0));
+			checkCudaErrors(cudaMemAdvise(arrayY_GPU, sizeof(double)*Nparticles, cudaMemAdviseSetAccessedBy, 0));
+			checkCudaErrors(cudaMemAdvise(xj_GPU, sizeof(double)*Nparticles, cudaMemAdviseSetAccessedBy, 0));
+			checkCudaErrors(cudaMemAdvise(yj_GPU, sizeof(double)*Nparticles, cudaMemAdviseSetAccessedBy, 0));
+			checkCudaErrors(cudaMemAdvise(CDF_GPU, sizeof(double)*Nparticles, cudaMemAdviseSetAccessedBy, 0));
+			checkCudaErrors(cudaMemAdvise(CDF_GPU, sizeof(double)*Nparticles, cudaMemAdviseSetAccessedBy, 0));
+			checkCudaErrors(cudaMemAdvise(u_GPU, sizeof(double)*Nparticles, cudaMemAdviseSetAccessedBy, 0));
+			checkCudaErrors(cudaMemAdvise(u_GPU, sizeof(double)*Nparticles, cudaMemAdviseSetAccessedBy, 0));
 		} else if (uvm_advise) {
 			checkCudaErrors(cudaMemAdvise(arrayX_GPU, sizeof(double)*Nparticles, cudaMemAdviseSetPreferredLocation, device));
 			checkCudaErrors(cudaMemAdvise(arrayX_GPU, sizeof(double)*Nparticles, cudaMemAdviseSetReadMostly, device));
@@ -947,7 +959,7 @@ void particleFilter(int * I, int IszX, int IszY, int Nfr, int * seed, int Nparti
         checkCudaErrors(cudaDeviceSynchronize());
 		//CUDA memory copying back from GPU to CPU memory
         checkCudaErrors(cudaEventRecord(start, 0));
-		if (uvm) {
+		if (uvm || zero_copy) {
 
 		} else if (uvm_advise) {
 			checkCudaErrors(cudaMemAdvise(yj, sizeof(double)*Nparticles, cudaMemAdviseSetPreferredLocation, cudaCpuDeviceId));
@@ -999,7 +1011,7 @@ void particleFilter(int * I, int IszX, int IszY, int Nfr, int * seed, int Nparti
     ofile << bench_name << ", " << kernelTime + transferTime << ", " << endl;
 	
 	//CUDA freeing of memory
-	if (!uvm && !uvm_advise && !uvm_prefetch && !uvm_prefetch_advise) {
+	if (!uvm && !uvm_advise && !uvm_prefetch && !uvm_prefetch_advise && !zero_copy) {
 		checkCudaErrors(cudaFree(u_GPU));
 		checkCudaErrors(cudaFree(CDF_GPU));
 		checkCudaErrors(cudaFree(yj_GPU));
@@ -1009,7 +1021,7 @@ void particleFilter(int * I, int IszX, int IszY, int Nfr, int * seed, int Nparti
 	} 
 	
 	//free memory
-	if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise) {
+	if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise || zero_copy) {
 		checkCudaErrors(cudaFree(disk));
 		checkCudaErrors(cudaFree(objxy));
 		checkCudaErrors(cudaFree(weights));
@@ -1151,6 +1163,7 @@ void RunBenchmark(ResultDatabase &resultDB, OptionParser &op, ofstream &ofile, s
 
 void particlefilter_naive(ResultDatabase &resultDB, OptionParser &op, int args[], ofstream &ofile, sem_t *sem){
 	const bool uvm = op.getOptionBool("uvm");
+	const bool zero_copy = op.getOptionBool("zero-copy");
     const bool uvm_advise = op.getOptionBool("uvm-advise");
     const bool uvm_prefetch = op.getOptionBool("uvm-prefetch");
     const bool uvm_prefetch_advise = op.getOptionBool("uvm-prefetch-advise");
@@ -1166,7 +1179,7 @@ void particlefilter_naive(ResultDatabase &resultDB, OptionParser &op, int args[]
 
 	//establish seed
 	int *seed = NULL;
-	if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise) {
+	if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise || zero_copy) {
 		checkCudaErrors(cudaMallocManaged(&seed, sizeof(int) * Nparticles));
 	} else {
 		seed = (int *)malloc(sizeof(int)*Nparticles);
@@ -1177,7 +1190,7 @@ void particlefilter_naive(ResultDatabase &resultDB, OptionParser &op, int args[]
 		seed[i] = time(0)*i;
 	//malloc matrix
 	int *I = NULL;
-	if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise) {
+	if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise || zero_copy) {
 		checkCudaErrors(cudaMallocManaged(&I, sizeof(int) * IszX * IszY * Nfr));
 	} else {
 		I = (int *)malloc(sizeof(int)*IszX*IszY*Nfr);
@@ -1188,7 +1201,7 @@ void particlefilter_naive(ResultDatabase &resultDB, OptionParser &op, int args[]
 	//call particle filter
 	particleFilter(I, IszX, IszY, Nfr, seed, Nparticles, op, resultDB, ofile, sem);
 	
-	if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise) {
+	if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise || zero_copy) {
 		checkCudaErrors(cudaFree(seed));
 		checkCudaErrors(cudaFree(I));
 	} else {

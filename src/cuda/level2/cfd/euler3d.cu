@@ -1030,6 +1030,7 @@ void cfd(ResultDatabase &resultDB, OptionParser &op, ofstream &ofile, sem_t *sem
 	bool uvm_prefetch = op.getOptionBool("uvm-prefetch");
 	bool pageable = op.getOptionBool("pageable");
 	bool copy = op.getOptionBool("copy");
+	bool zero_copy = op.getOptionBool("zero-copy");
     const bool is_barrier = op.getOptionBool("sem");
     string bench_name = op.getOptionString("bench");
 
@@ -1112,7 +1113,7 @@ void cfd(ResultDatabase &resultDB, OptionParser &op, ofstream &ofile, sem_t *sem
 		float *h_areas = NULL;
 		int *h_elements_surrounding_elements = NULL;
 		float *h_normals = NULL;
-		if (uvm || uvm_prefetch) {
+		if (uvm || uvm_prefetch || zero_copy) {
 			// could use prefetch and advise
 			checkCudaErrors(cudaMallocManaged(&h_areas, nelr * sizeof(float)));
 			checkCudaErrors(cudaMallocManaged(&h_elements_surrounding_elements,
@@ -1179,7 +1180,14 @@ void cfd(ResultDatabase &resultDB, OptionParser &op, ofstream &ofile, sem_t *sem
 			areas = h_areas;
 			elements_surrounding_elements = h_elements_surrounding_elements;
 			normals = h_normals;
-		} else if (uvm_prefetch) {
+		} else if (zero_copy) {
+			areas = h_areas;
+			elements_surrounding_elements = h_elements_surrounding_elements;
+			normals = h_normals;
+            checkCudaErrors(cudaMemAdvise(areas, sizeof(float) * nelr, cudaMemAdviseSetAccessedBy, 0));
+            checkCudaErrors(cudaMemAdvise(elements_surrounding_elements, sizeof(int) * nelr * NNB, cudaMemAdviseSetAccessedBy, 0));
+            checkCudaErrors(cudaMemAdvise(normals, sizeof(float) * nelr * NDIM * NNB, cudaMemAdviseSetAccessedBy, 0));
+        } else if (uvm_prefetch) {
 			areas = h_areas;
 			elements_surrounding_elements = h_elements_surrounding_elements;
 			normals = h_normals;
@@ -1214,7 +1222,7 @@ void cfd(ResultDatabase &resultDB, OptionParser &op, ofstream &ofile, sem_t *sem
 
 	// Create arrays and set initial conditions
 	float *variables = NULL;
-	if (uvm || uvm_prefetch) {
+	if (uvm || uvm_prefetch || zero_copy) {
 		checkCudaErrors(cudaMallocManaged(&variables, nelr*NVAR*sizeof(float)));
 	} else if (copy || pageable) {
 		variables = alloc<float>(nelr*NVAR);
@@ -1226,7 +1234,7 @@ void cfd(ResultDatabase &resultDB, OptionParser &op, ofstream &ofile, sem_t *sem
 	float *old_variables = NULL;
 	float *fluxes = NULL;
 	float *step_factors = NULL;
-	if (uvm || uvm_prefetch) {
+	if (uvm || uvm_prefetch || zero_copy) {
 		checkCudaErrors(cudaMallocManaged(&old_variables, nelr*NVAR*sizeof(float)));
 		checkCudaErrors(cudaMallocManaged(&fluxes, nelr*NVAR*sizeof(float)));
 		checkCudaErrors(cudaMallocManaged(&step_factors, nelr*sizeof(float)));
@@ -1290,7 +1298,7 @@ void cfd(ResultDatabase &resultDB, OptionParser &op, ofstream &ofile, sem_t *sem
 	    dump(variables, nel, nelr);
     }
 
-	if (uvm || uvm_prefetch) {
+	if (uvm || uvm_prefetch || zero_copy) {
 		checkCudaErrors(cudaFree(areas));
 		checkCudaErrors(cudaFree(elements_surrounding_elements));
 		checkCudaErrors(cudaFree(normals));

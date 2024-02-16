@@ -344,6 +344,7 @@ void RunBenchmark(ResultDatabase &DB, OptionParser &op, ofstream &ofile, sem_t *
   const bool uvm = op.getOptionBool("uvm");
   const bool uvm_prefetch = op.getOptionBool("uvm-prefetch");
   const bool uvm_oversub = op.getOptionBool("uvm-oversub");
+  const bool zero_copy = op.getOptionBool("zero-copy");
   const bool is_barrier = op.getOptionBool("sem");
   string bench_name = op.getOptionString("bench");
 
@@ -418,7 +419,12 @@ void RunBenchmark(ResultDatabase &DB, OptionParser &op, ofstream &ofile, sem_t *
       printf("[copy] Done init\n");
 
       checkCudaErrors(cudaEventRecord(begin));
-      fflush(stdout);
+  } else if (zero_copy) {
+      checkCudaErrors(cudaMallocManaged((void **)&d_t, n * sizeof(benchtype)));
+      memset(d_t, 1,  n * sizeof(benchtype));
+      checkCudaErrors(cudaMemAdvise(d_t, n * sizeof(benchtype), cudaMemAdviseSetAccessedBy, 0));
+      printf("[zero-copy] Done init\n");
+      checkCudaErrors(cudaEventRecord(begin));
   } else if (pageable) {
       h_t = (benchtype*)malloc(n * sizeof(benchtype));
       memset(h_t, 1,  n * sizeof(benchtype));

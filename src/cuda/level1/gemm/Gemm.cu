@@ -204,6 +204,7 @@ void RunTest(string testName, ResultDatabase &resultDB, OptionParser &op, ofstre
   const bool uvm = op.getOptionBool("uvm");
   // (taeklim)
   const bool copy = op.getOptionBool("copy");
+  const bool zero_copy = op.getOptionBool("zero-copy");
   const bool pageable = op.getOptionBool("pageable");
   const bool uvm_oversub = op.getOptionBool("uvm-oversub");
   const bool uvm_copy = op.getOptionBool("uvm-copy");
@@ -243,7 +244,7 @@ void RunTest(string testName, ResultDatabase &resultDB, OptionParser &op, ofstre
   T *A;
   T *B;
   T *C;
-  if (uvm || uvm_prefetch || uvm_advise || uvm_prefetch_advise || uvm_copy) {
+  if (uvm || uvm_prefetch || uvm_advise || uvm_prefetch_advise || uvm_copy || zero_copy) {
       checkCudaErrors(cudaMallocManaged(&dA, N * N* sizeof(T)));
       checkCudaErrors(cudaMallocManaged(&dB, N * N* sizeof(T)));
       checkCudaErrors(cudaMallocManaged(&dC, N * N* sizeof(T)));
@@ -307,6 +308,12 @@ void RunTest(string testName, ResultDatabase &resultDB, OptionParser &op, ofstre
   if (uvm) {
       checkCudaErrors(cudaEventRecord(start, 0));
       // Do nothing
+  } else if (zero_copy) {
+      checkCudaErrors(cudaEventRecord(start, 0));
+      // could ignore this to test demand paging performance affect
+      checkCudaErrors(cudaMemAdvise(dA, N * N * sizeof(T), cudaMemAdviseSetAccessedBy, 0));
+      // checkCudaErrors(cudaStreamSynchronize(0));
+      // checkCudaErrors(cudaStreamSynchronize((cudaStream_t)1));
   } else if (uvm_prefetch || uvm_copy) {
       checkCudaErrors(cudaEventRecord(start, 0));
       // could ignore this to test demand paging performance affect
@@ -392,8 +399,8 @@ void RunTest(string testName, ResultDatabase &resultDB, OptionParser &op, ofstre
 
       double cublasTime;
       float kernelTime = 0.0f;
+      checkCudaErrors(cudaEventRecord(start, 0));
       for (int ii = 0; ii < 4; ++ii) {
-          checkCudaErrors(cudaEventRecord(start, 0));
           devGEMM<T>(handle, transa, transb, m, n, k, &alpha, dA, lda, dB, ldb, &beta, dC,
                     ldc);
           CHECK_CUDA_ERROR();
@@ -407,7 +414,7 @@ void RunTest(string testName, ResultDatabase &resultDB, OptionParser &op, ofstre
 
       checkCudaErrors(cudaEventRecord(start, 0));    // timing may be affected by async
 
-      if (uvm) {
+      if (uvm || zero_copy) {
         // Do nothing
       } else if (uvm_prefetch || uvm_copy) {
           checkCudaErrors(cudaMemPrefetchAsync(dC, N * N * sizeof(T), cudaCpuDeviceId));
@@ -441,11 +448,13 @@ void RunTest(string testName, ResultDatabase &resultDB, OptionParser &op, ofstre
       std::string transb_string = (transb == CUBLAS_OP_T)? "T" : "N";
       string atts = "dim:" + toString(dim);
       //resultDB.AddResult(testName + "-" + transb_string + "-TransferTime", atts, "sec", transferTime);
-      resultDB.AddResult(testName + "-" + transb_string + "-TotalTime", atts, "sec", totalTime);
-      resultDB.AddResult(testName + "-" + transb_string + "-KernelTime", atts, "sec", kernelTime);
+      if (i == 0) {
+          resultDB.AddResult(testName + "-" + transb_string + "-TotalTime", atts, "sec", totalTime);
+          resultDB.AddResult(testName + "-" + transb_string + "-KernelTime", atts, "sec", kernelTime);
+          resultDB.AddResult(testName + "-" + transb_string + "-cublasTime", atts, "sec", cublasTime);
+          ofile << bench_name << ", " << cublasTime << ", " << endl;
+      }
 
-      ofile << bench_name << ", " << kernelTime << ", " << endl;
-//      resultDB.AddResult(testName + "-" + transb_string + "-cublasTime", atts, "sec", cublasTime);
 //      resultDB.AddResult(testName + "-" + transb_string + "-TotalTime", atts, "sec", transferTime + cublasTime);
 //      resultDB.AddResult(testName + "-" + transb_string, atts, "GFlops", cublasGflops);
 //      resultDB.AddResult(testName + "-" + transb_string + "_PCIe", atts, "GFlops", pcieGflops);
@@ -457,7 +466,7 @@ void RunTest(string testName, ResultDatabase &resultDB, OptionParser &op, ofstre
   checkCudaErrors(cudaFree(dA));
   checkCudaErrors(cudaFree(dB));
   checkCudaErrors(cudaFree(dC));
-  if (!uvm && !uvm_prefetch && !uvm_advise && !uvm_prefetch_advise && !uvm_copy && !pageable) {
+  if (!uvm && !uvm_prefetch && !uvm_advise && !uvm_prefetch_advise && !uvm_copy && !pageable && !zero_copy) {
     checkCudaErrors(cudaFreeHost(A));
     checkCudaErrors(cudaFreeHost(B));
     checkCudaErrors(cudaFreeHost(C));

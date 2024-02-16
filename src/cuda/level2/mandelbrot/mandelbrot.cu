@@ -545,6 +545,7 @@ __global__ void mandelbrot_block_k
 void mandelbrot(ResultDatabase &resultDB, OptionParser &op, int size, int MAX_DWELL, 
         sem_t *sem) {
 	const bool uvm = op.getOptionBool("uvm");
+	const bool zero_copy = op.getOptionBool("zero-copy");
 	const bool copy = op.getOptionBool("copy");
 	const bool pageable = op.getOptionBool("pageable");
 	const bool uvm_advise = op.getOptionBool("uvm-advise");
@@ -559,7 +560,7 @@ void mandelbrot(ResultDatabase &resultDB, OptionParser &op, int size, int MAX_DW
 	int w = size, h = size;
 	size_t dwell_sz = w * h * sizeof(int);
 	int *h_dwells, *d_dwells;
-	if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise) {
+	if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise || zero_copy) {
 		checkCudaErrors(cudaMallocManaged((void**)&d_dwells, dwell_sz));
         // (taeklim)
         memset(d_dwells, 1, dwell_sz);
@@ -598,6 +599,9 @@ void mandelbrot(ResultDatabase &resultDB, OptionParser &op, int size, int MAX_DW
     checkCudaErrors(cudaEventRecord(start, 0));
 	if (uvm) {
 		h_dwells = d_dwells;
+	} else if (zero_copy) {
+		h_dwells = d_dwells;
+		checkCudaErrors(cudaMemAdvise(h_dwells, dwell_sz, cudaMemAdviseSetAccessedBy, 0));
 	} else if (uvm_advise) {
 		h_dwells = d_dwells;
 		checkCudaErrors(cudaMemAdvise(h_dwells, dwell_sz, cudaMemAdviseSetReadMostly, cudaCpuDeviceId));
@@ -620,7 +624,7 @@ void mandelbrot(ResultDatabase &resultDB, OptionParser &op, int size, int MAX_DW
 
 	// free data
 	checkCudaErrors(cudaFree(d_dwells));
-	if (!uvm && !uvm_prefetch && !uvm_advise && !uvm_prefetch_advise && !copy) {
+	if (!uvm && !uvm_prefetch && !uvm_advise && !uvm_prefetch_advise && !copy && !zero_copy) {
 		free(h_dwells);
 	} else if (copy) {
         cudaFreeHost(h_dwells);

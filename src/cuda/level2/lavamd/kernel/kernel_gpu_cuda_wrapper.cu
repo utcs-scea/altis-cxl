@@ -45,6 +45,7 @@ kernel_gpu_cuda_wrapper(par_str par_cpu,
                         sem_t *sem)
 {
 	bool uvm = op.getOptionBool("uvm");
+	bool zero_copy = op.getOptionBool("zero-copy");
 	bool uvm_prefetch = op.getOptionBool("uvm-prefetch");
 	bool copy = op.getOptionBool("copy");
 	bool pageable = op.getOptionBool("pageable");
@@ -107,7 +108,7 @@ kernel_gpu_cuda_wrapper(par_str par_cpu,
 	//	boxes
 	//==================================================50
 
-	if (uvm || uvm_prefetch) {
+	if (uvm || uvm_prefetch || zero_copy) {
 		d_box_gpu = box_cpu;
 	} else if (copy) {
 		checkCudaErrors(cudaMalloc(	(void **)&d_box_gpu,
@@ -121,7 +122,7 @@ kernel_gpu_cuda_wrapper(par_str par_cpu,
 	//	rv
 	//==================================================50
 
-	if (uvm || uvm_prefetch) {
+	if (uvm || uvm_prefetch || zero_copy) {
 		d_rv_gpu = rv_cpu;
 	} else if (copy) {
 		checkCudaErrors(cudaMalloc(	(void **)&d_rv_gpu, 
@@ -135,7 +136,7 @@ kernel_gpu_cuda_wrapper(par_str par_cpu,
 	//	qv
 	//==================================================50
 
-	if (uvm || uvm_prefetch) {
+	if (uvm || uvm_prefetch || zero_copy) {
 		d_qv_gpu = qv_cpu;
 	} else if (copy) {
 		checkCudaErrors(cudaMalloc(	(void **)&d_qv_gpu,
@@ -153,7 +154,7 @@ kernel_gpu_cuda_wrapper(par_str par_cpu,
 	//	fv
 	//==================================================50
 
-	if (uvm || uvm_prefetch) {
+	if (uvm || uvm_prefetch || zero_copy) {
 		d_fv_gpu = fv_cpu;
 	} else if (copy) {
 		checkCudaErrors(cudaMalloc(	(void **)&d_fv_gpu, 
@@ -180,7 +181,9 @@ kernel_gpu_cuda_wrapper(par_str par_cpu,
 
 	if (uvm) {
 		// Demand paging
-	} else if (uvm_prefetch) {
+	} else if (zero_copy) {
+        checkCudaErrors(cudaMemAdvise(d_box_gpu, dim_cpu.box_mem, cudaMemAdviseSetAccessedBy, 0));
+    } else if (uvm_prefetch) {
         checkCudaErrors(cudaMemPrefetchAsync(d_box_gpu, dim_cpu.box_mem, device));
     } else if (copy || pageable) {
         if (is_barrier && pageable) {
@@ -205,7 +208,9 @@ kernel_gpu_cuda_wrapper(par_str par_cpu,
 	
 	if (uvm) {
 		// Demand paging
-	} else if (uvm_prefetch) {
+	} else if (zero_copy) {
+        checkCudaErrors(cudaMemAdvise(d_rv_gpu, dim_cpu.space_mem, cudaMemAdviseSetAccessedBy, 0));
+    } else if (uvm_prefetch) {
         checkCudaErrors(cudaMemPrefetchAsync(d_rv_gpu, dim_cpu.space_mem, device));
     } else if (copy) {
 		checkCudaErrors(cudaMemcpy(	d_rv_gpu,
@@ -225,7 +230,9 @@ kernel_gpu_cuda_wrapper(par_str par_cpu,
 
 	if (uvm) {
 		// Demand paging
-	} else if (uvm_prefetch) {
+	} else if (zero_copy) {
+        checkCudaErrors(cudaMemAdvise(d_qv_gpu, dim_cpu.space_mem2, cudaMemAdviseSetAccessedBy, device));
+    } else if (uvm_prefetch) {
         checkCudaErrors(cudaMemPrefetchAsync(d_qv_gpu, dim_cpu.space_mem2, device));
     } else if (copy) {
 		checkCudaErrors(cudaMemcpy(	d_qv_gpu,
@@ -249,7 +256,9 @@ kernel_gpu_cuda_wrapper(par_str par_cpu,
 
 	if (uvm) {
 		// Demand paging
-	} else if (uvm_prefetch) {
+	} else if (zero_copy) {
+        checkCudaErrors(cudaMemAdvise(d_fv_gpu, dim_cpu.space_mem, cudaMemAdviseSetAccessedBy, 0));
+    } else if (uvm_prefetch) {
         checkCudaErrors(cudaMemPrefetchAsync(d_fv_gpu, dim_cpu.space_mem, device));
     } else if (copy) {
 		checkCudaErrors(cudaMemcpy(	d_fv_gpu, 
@@ -305,7 +314,7 @@ kernel_gpu_cuda_wrapper(par_str par_cpu,
 
     checkCudaErrors(cudaEventRecord(start, 0));
 
-	if (uvm || uvm_prefetch) {
+	if (uvm || uvm_prefetch || zero_copy) {
 		checkCudaErrors(cudaMemPrefetchAsync(d_fv_gpu, dim_cpu.space_mem, cudaCpuDeviceId));
         checkCudaErrors(cudaStreamSynchronize(0));
 	} else if (copy) {
@@ -339,7 +348,7 @@ kernel_gpu_cuda_wrapper(par_str par_cpu,
 
 	if (uvm) {
 		// Demand paging, no need to free
-	} else if (uvm_prefetch) {
+	} else if (uvm_prefetch || zero_copy) {
 
 	} else if (copy) {
 		checkCudaErrors(cudaFree(d_rv_gpu));

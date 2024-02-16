@@ -143,12 +143,13 @@ void RunBenchmark(ResultDatabase &resultDB, OptionParser &op, ofstream &ofile, s
 void init(OptionParser &op) {
   const bool uvm = op.getOptionBool("uvm");
   const bool copy = op.getOptionBool("copy");
+  const bool zero_copy = op.getOptionBool("zero-copy");
   const bool pageable = op.getOptionBool("pageable");
   const bool uvm_advise = op.getOptionBool("uvm-advise");
   const bool uvm_prefetch = op.getOptionBool("uvm-prefetch");
   const bool uvm_prefetch_advise = op.getOptionBool("uvm-prefetch-advise");
 
-  if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise) {
+  if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise || zero_copy) {
     checkCudaErrors(cudaMallocManaged(&data, sizeof(int) * rows * cols));
     checkCudaErrors(cudaMallocManaged(&wall, sizeof(int *) * rows));
     for (int n = 0; n < rows; n++)  {
@@ -405,13 +406,14 @@ void run(int borderCols, int smallBlockCol, int blockCols,
   const bool uvm_advise = op.getOptionBool("uvm-advise");
   const bool uvm_prefetch = op.getOptionBool("uvm-prefetch");
   const bool uvm_prefetch_advise = op.getOptionBool("uvm-prefetch-advise");
+  const bool zero_copy = op.getOptionBool("zero-copy");
   const bool is_barrier = op.getOptionBool("sem");
   string bench_name = op.getOptionString("bench");
 
   int *gpuWall, *gpuResult[2];
   int size = rows * cols;
 
-  if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise) {
+  if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise || zero_copy) {
     gpuResult[0] = data;
     checkCudaErrors(cudaMallocManaged((void **)&gpuResult[1], sizeof(int) * cols));
     checkCudaErrors(cudaMallocManaged((void **)&gpuWall, sizeof(int) * (size - cols)));
@@ -423,6 +425,8 @@ void run(int borderCols, int smallBlockCol, int blockCols,
     checkCudaErrors(cudaMalloc((void **)&gpuResult[1], sizeof(int) * cols));
     checkCudaErrors(cudaMalloc((void **)&gpuWall, sizeof(int) * (size - cols)));
   }
+  printf("Done allocation\n");
+  fflush(stdout);
 
   // Cuda events and times
   cudaEvent_t start, stop;
@@ -432,10 +436,13 @@ void run(int borderCols, int smallBlockCol, int blockCols,
   double transferTime = 0.;
   double kernelTime = 0;
 
-
   if (uvm) {
       checkCudaErrors(cudaEventRecord(start, 0));
       // do nothing
+  } else if (zero_copy) {
+      checkCudaErrors(cudaEventRecord(start, 0));
+      checkCudaErrors(cudaMemAdvise(gpuResult[0], sizeof(int) * cols, cudaMemAdviseSetAccessedBy, 0));
+      checkCudaErrors(cudaMemAdvise(gpuWall, sizeof(int) * (size - cols), cudaMemAdviseSetAccessedBy, 0));
   } else if (uvm_advise) {
       checkCudaErrors(cudaEventRecord(start, 0));
       checkCudaErrors(cudaMemAdvise(gpuResult[0], sizeof(int) * cols, cudaMemAdviseSetPreferredLocation, device_id));
@@ -495,7 +502,7 @@ void run(int borderCols, int smallBlockCol, int blockCols,
       }
       printf("[Barrier] Kernel starts\n");
   }
-
+  printf("before kernel launch\n");
 #ifdef HYPERQ
   double hyperqKernelTime = 0;
   /// <summary>	Calc the path with hyperQ enabled. </summary>
@@ -505,10 +512,11 @@ void run(int borderCols, int smallBlockCol, int blockCols,
   int final_ret = calc_path(gpuWall, gpuResult, rows, cols, pyramid_height, blockCols,
                 borderCols, kernelTime, false, instances);
 #endif
+  printf("Done kernel\n");
 
   checkCudaErrors(cudaEventRecord(start, 0));
 
-  if (uvm) {
+  if (uvm || zero_copy) {
     result = gpuResult[final_ret];
   } else if (uvm_advise) {
     result = gpuResult[final_ret];
@@ -560,7 +568,7 @@ void run(int borderCols, int smallBlockCol, int blockCols,
   cudaFree(gpuResult[0]);
   cudaFree(gpuResult[1]);
 
-  if (!uvm && !uvm_advise && !uvm_prefetch && !uvm_prefetch_advise && !copy) {
+  if (!uvm && !uvm_advise && !uvm_prefetch && !uvm_prefetch_advise && !copy && !zero_copy) {
       delete[] data;
       delete[] wall;
       delete[] result;
@@ -586,7 +594,6 @@ void run(int borderCols, int smallBlockCol, int blockCols,
   resultDB.AddResult("pathfinder_total_time", atts, "sec", kernelTime + transferTime);
   resultDB.AddResult("pathfinder_parity", atts, "N",
                      transferTime / kernelTime);
-
 #endif
   resultDB.AddOverall("Time", "sec", kernelTime+transferTime);
   

@@ -15,11 +15,12 @@ elif [[ $# -ne 1 ]]; then
 fi 
 
 
-benchmarks1=('gups' 'sort' 'pathfinder' 'gemm')
+benchmarks1=('gups' 'bfs' 'sort' 'pathfinder' 'gemm')
 benchmarks2=('nw' 'lavamd' 'where' 'particlefilter_naive' 'mandelbrot' 'srad' 'fdtd2d' 'cfd' )
 
 # Running these benches
-benchmarks=('gups' 'sort' 'pathfinder' 'nw' 'lavamd' 'where' 'particlefilter_naive' 'mandelbrot' 'srad' 'fdtd2d' 'cfd' )
+benchmarks=('gups' 'bfs' 'sort' 'pathfinder' 'nw' 'lavamd' 'where' 'particlefilter_naive' 'mandelbrot' 'srad' 'fdtd2d' 'cfd' )
+benchmarks=('bfs')
 
 total_run=$1
 
@@ -41,7 +42,11 @@ do
             echo "not on listed\n"
             exit 0
         fi
-        $pwd/build/bin/$level/$bench -s 4 --passes 1 --uvm -o $pwd/results/$bench.csv -b $bench
+        /usr/local/cuda/bin/nsys profile --force-overwrite=true \
+            --cuda-um-gpu-page-faults=true --cuda-um-cpu-page-faults=true --cuda-memory-usage=true \
+            --export=json -o $pwd/nsys-results/$bench-emoji \
+            $pwd/build/bin/$level/$bench -s 4 --passes 1 --emoji -o $pwd/results/$bench.csv -b $bench
+            #$pwd/build/bin/$level/$bench -s 4 --passes 1 --uvm -o $pwd/results/$bench.csv -b $bench
         echo "Done with $bench ${i} times..."
         sleep 3
     done

@@ -129,6 +129,7 @@ void seedArr(int *arr, int size) {
 
 void where(ResultDatabase &resultDB, OptionParser &op, int size, int coverage, ofstream &ofile, sem_t *sem) {
     const bool uvm = op.getOptionBool("uvm");
+    const bool zero_copy = op.getOptionBool("zero-copy");
     const bool copy = op.getOptionBool("copy");
     const bool pageable = op.getOptionBool("pageable");
     const bool uvm_advise = op.getOptionBool("uvm-advise");
@@ -140,7 +141,7 @@ void where(ResultDatabase &resultDB, OptionParser &op, int size, int coverage, o
     checkCudaErrors(cudaGetDevice(&device));
 
     int *arr = NULL;
-    if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise) {
+    if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise || zero_copy) {
         checkCudaErrors(cudaMallocManaged(&arr, sizeof(int) * size));
     } else if (copy) {
         checkCudaErrors(cudaMallocHost(&arr, sizeof(int) * size));
@@ -156,7 +157,7 @@ void where(ResultDatabase &resultDB, OptionParser &op, int size, int coverage, o
     int *d_prefix;
     int *d_final;
     
-    if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise) {
+    if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise || zero_copy) {
         d_arr = arr;
         checkCudaErrors(cudaMallocManaged( (void**) &d_results, sizeof(int) * size));
         checkCudaErrors(cudaMallocManaged( (void**) &d_prefix, sizeof(int) * size));
@@ -169,6 +170,9 @@ void where(ResultDatabase &resultDB, OptionParser &op, int size, int coverage, o
     if (uvm) {
         checkCudaErrors(cudaEventRecord(start, 0));
         // do nothing
+    } else if (zero_copy) {
+        checkCudaErrors(cudaEventRecord(start, 0));
+        checkCudaErrors(cudaMemAdvise(d_arr, sizeof(int) * size, cudaMemAdviseSetAccessedBy, 0));
     } else if (uvm_advise) {
         checkCudaErrors(cudaEventRecord(start, 0));
         checkCudaErrors(cudaMemAdvise(d_arr, sizeof(int) * size, cudaMemAdviseSetReadMostly, device));
@@ -229,7 +233,7 @@ void where(ResultDatabase &resultDB, OptionParser &op, int size, int coverage, o
 
     int matchSize;
     checkCudaErrors(cudaEventRecord(start, 0));
-    if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise) {
+    if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise || zero_copy) {
         matchSize = (int)*(d_prefix + size - 1);
     } else {
         checkCudaErrors(cudaMemcpy(&matchSize, d_prefix + size - 1, sizeof(int), cudaMemcpyDeviceToHost));
@@ -240,7 +244,7 @@ void where(ResultDatabase &resultDB, OptionParser &op, int size, int coverage, o
     transferTime += elapsedTime * 1.e-3;
     matchSize++;
 
-    if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise) {
+    if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise || zero_copy) {
         checkCudaErrors(cudaMallocManaged( (void**) &d_final, sizeof(int) * matchSize));
         final = d_final;
     } else {
@@ -261,6 +265,8 @@ void where(ResultDatabase &resultDB, OptionParser &op, int size, int coverage, o
     // No cpy just demand paging
     if (uvm) {
         // Do nothing
+    } else if (zero_copy) {
+        checkCudaErrors(cudaMemAdvise(final, sizeof(int) * matchSize, cudaMemAdviseSetAccessedBy, 0));
     } else if (uvm_advise) {
         checkCudaErrors(cudaMemAdvise(final, sizeof(int) * matchSize, cudaMemAdviseSetReadMostly, device));
         checkCudaErrors(cudaMemAdvise(final, sizeof(int) * matchSize, cudaMemAdviseSetPreferredLocation, device));
@@ -278,7 +284,7 @@ void where(ResultDatabase &resultDB, OptionParser &op, int size, int coverage, o
     checkCudaErrors(cudaEventElapsedTime(&elapsedTime, start, stop));
     transferTime += elapsedTime * 1.e-3;
 
-    if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise) {
+    if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise || zero_copy) {
         checkCudaErrors(cudaFree(d_arr));
         checkCudaErrors(cudaFree(d_results));
         checkCudaErrors(cudaFree(d_prefix));

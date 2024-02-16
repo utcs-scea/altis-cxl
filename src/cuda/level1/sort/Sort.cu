@@ -77,6 +77,7 @@ void RunBenchmark(ResultDatabase &resultDB, OptionParser &op, ofstream &ofile, s
   const bool uvm_prefetch = op.getOptionBool("uvm-prefetch");
   const bool uvm_advise = op.getOptionBool("uvm-advise");
   const bool uvm_prefetch_advise = op.getOptionBool("uvm-prefetch-advise");
+  const bool zero_copy = op.getOptionBool("zero-copy");
   const bool is_barrier = op.getOptionBool("sem");
   string bench_name = op.getOptionString("bench");
   int device = 0;
@@ -123,7 +124,7 @@ void RunBenchmark(ResultDatabase &resultDB, OptionParser &op, ofstream &ofile, s
   ///
   ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-  if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise) {
+  if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise || zero_copy) {
       checkCudaErrors(cudaMallocManaged(&hKeys, bytes));
       checkCudaErrors(cudaMallocManaged(&hVals, bytes));
   } else if (copy) {
@@ -153,7 +154,7 @@ void RunBenchmark(ResultDatabase &resultDB, OptionParser &op, ofstream &ofile, s
   } while (numScanElts > 1);
 
   uint **scanBlockSums = NULL;
-  if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise) {
+  if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise || zero_copy) {
       checkCudaErrors(cudaMallocManaged(&scanBlockSums, (level+1) * sizeof(uint *)));
   } else {
       scanBlockSums = (uint **)malloc((level + 1) * sizeof(uint *));
@@ -169,7 +170,7 @@ void RunBenchmark(ResultDatabase &resultDB, OptionParser &op, ofstream &ofile, s
         max(1, (int)ceil((float)numScanElts / (4 * SCAN_BLOCK_SIZE)));
     if (numBlocks > 1) {
       // Malloc device mem for block sums
-      if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise) {
+      if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise || zero_copy) {
           checkCudaErrors(cudaMallocManaged((void **)&(scanBlockSums[level]),
                                       numBlocks * sizeof(uint)));
       } else {
@@ -181,14 +182,14 @@ void RunBenchmark(ResultDatabase &resultDB, OptionParser &op, ofstream &ofile, s
     numScanElts = numBlocks;
   } while (numScanElts > 1);
 
-  if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise) {
+  if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise || zero_copy) {
     checkCudaErrors(cudaMallocManaged((void **)&(scanBlockSums[level]), sizeof(uint)));
   } else if (copy || pageable) {
     checkCudaErrors(cudaMalloc((void **)&(scanBlockSums[level]), sizeof(uint)));
   }
 
 
-  if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise) {
+  if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise || zero_copy) {
     dKeys = hKeys;
     dVals = hVals;
     checkCudaErrors(cudaMallocManaged((void **)&dTempKeys, bytes));
@@ -204,7 +205,7 @@ void RunBenchmark(ResultDatabase &resultDB, OptionParser &op, ofstream &ofile, s
   size_t numSortGroups = size / (4 * SORT_BLOCK_SIZE);
 
   uint *dCounters, *dCounterSums, *dBlockOffsets;
-  if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise) {
+  if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise || zero_copy) {
     checkCudaErrors(cudaMallocManaged((void **)&dCounters,
                               WARP_SIZE * numSortGroups * sizeof(uint)));
     checkCudaErrors(cudaMallocManaged((void **)&dCounterSums,
@@ -245,19 +246,23 @@ void RunBenchmark(ResultDatabase &resultDB, OptionParser &op, ofstream &ofile, s
     if (uvm) {
       // do nothing
         checkCudaErrors(cudaEventRecord(start, 0));
+    } else if (zero_copy) {
+      checkCudaErrors(cudaEventRecord(start, 0));
+      checkCudaErrors(cudaMemAdvise(dKeys, bytes, cudaMemAdviseSetAccessedBy, 0));
+      checkCudaErrors(cudaMemAdvise(dVals, bytes, cudaMemAdviseSetAccessedBy, 0));
     } else if (uvm_advise) {
-        checkCudaErrors(cudaEventRecord(start, 0));
+      checkCudaErrors(cudaEventRecord(start, 0));
       checkCudaErrors(cudaMemAdvise(dKeys, bytes, cudaMemAdviseSetPreferredLocation, device));
       checkCudaErrors(cudaMemAdvise(dVals, bytes, cudaMemAdviseSetPreferredLocation, device));
     } else if (uvm_prefetch) {
-        checkCudaErrors(cudaEventRecord(start, 0));
+      checkCudaErrors(cudaEventRecord(start, 0));
       checkCudaErrors(cudaMemPrefetchAsync(dKeys, bytes, device));
       cudaStream_t s1;
       checkCudaErrors(cudaStreamCreate(&s1));
       checkCudaErrors(cudaMemPrefetchAsync(dVals, bytes, device, s1));
       checkCudaErrors(cudaStreamDestroy(s1));
     } else if (uvm_prefetch_advise) {
-        checkCudaErrors(cudaEventRecord(start, 0));
+      checkCudaErrors(cudaEventRecord(start, 0));
       checkCudaErrors(cudaMemAdvise(dKeys, bytes, cudaMemAdviseSetPreferredLocation, device));
       checkCudaErrors(cudaMemAdvise(dVals, bytes, cudaMemAdviseSetPreferredLocation, device));
       checkCudaErrors(cudaMemPrefetchAsync(dKeys, bytes, device));

@@ -134,6 +134,7 @@ void RunBenchmark(ResultDatabase &resultDB, OptionParser &op, ofstream &ofile, s
   srand(SEED);
   bool quiet = op.getOptionBool("quiet");
   const bool uvm = op.getOptionBool("uvm");
+  const bool zero_copy = op.getOptionBool("zero-copy");
   const bool copy = op.getOptionBool("copy");
   const bool pageable = op.getOptionBool("pageable");
   const bool uvm_advise = op.getOptionBool("uvm-advice");
@@ -171,7 +172,7 @@ void RunBenchmark(ResultDatabase &resultDB, OptionParser &op, ofstream &ofile, s
   int passes = op.getOptionInt("passes");
   for (int i = 0; i < passes; i++) {
     float *matrix = NULL;
-    if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise) {
+    if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise || zero_copy) {
         checkCudaErrors(cudaMallocManaged(&matrix, imageSize * imageSize * sizeof(float)));
     } else if (copy) {
         checkCudaErrors(cudaMallocHost(&matrix, imageSize * imageSize * sizeof(float)));
@@ -204,7 +205,7 @@ void RunBenchmark(ResultDatabase &resultDB, OptionParser &op, ofstream &ofile, s
             resultDB.AddResult("srad_gridsync_speedup", atts, "N", time/time_gridsync);
         }
     }
-    if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise) {
+    if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise || zero_copy) {
         checkCudaErrors(cudaFree(matrix));
     } else if (copy) {
         checkCudaErrors(cudaFreeHost(matrix));
@@ -232,6 +233,7 @@ void RunBenchmark(ResultDatabase &resultDB, OptionParser &op, ofstream &ofile, s
 float srad(ResultDatabase &resultDB, OptionParser &op, float* matrix, int imageSize,
         int speckleSize, int iters, ofstream &ofile, sem_t *sem) {
     const bool uvm = op.getOptionBool("uvm");
+    const bool zero_copy = op.getOptionBool("zero-copy");
     const bool uvm_advise = op.getOptionBool("uvm-advise");
     const bool uvm_prefetch = op.getOptionBool("uvm-prefetch");
     const bool uvm_prefetch_advise = op.getOptionBool("uvm-prefetch-advise");
@@ -271,7 +273,7 @@ float srad(ResultDatabase &resultDB, OptionParser &op, float* matrix, int imageS
     size_I = cols * rows;
     size_R = (r2 - r1 + 1) * (c2 - c1 + 1);
 
-    if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise) {
+    if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise || zero_copy) {
         checkCudaErrors(cudaMallocManaged(&J, sizeof(float) * size_I));
         checkCudaErrors(cudaMallocManaged(&c, sizeof(float) * size_I));
     } else if (copy) {
@@ -288,7 +290,7 @@ float srad(ResultDatabase &resultDB, OptionParser &op, float* matrix, int imageS
     }
 
     // Allocate device memory
-    if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise) {
+    if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise || zero_copy) {
         J_cuda = J;
         C_cuda = c;
         checkCudaErrors(cudaMallocManaged((void **)&E_C, sizeof(float) * size_I));
@@ -305,7 +307,7 @@ float srad(ResultDatabase &resultDB, OptionParser &op, float* matrix, int imageS
     }
 
     // copy random matrix
-    if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise || copy) {
+    if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise || copy || zero_copy) {
         I = matrix;
     } else if (pageable) {
         memcpy(I, matrix, rows*cols*sizeof(float));
@@ -341,6 +343,8 @@ float srad(ResultDatabase &resultDB, OptionParser &op, float* matrix, int imageS
         }
         if (uvm) {
             // do nothing
+        } else if (zero_copy) {
+            checkCudaErrors(cudaMemAdvise(J_cuda, sizeof(float) * size_I, cudaMemAdviseSetAccessedBy, 0));
         } else if (uvm_advise) {
             checkCudaErrors(cudaMemAdvise(J_cuda, sizeof(float) * size_I, cudaMemAdviseSetPreferredLocation, device));
         } else if (uvm_prefetch) {
@@ -399,7 +403,7 @@ float srad(ResultDatabase &resultDB, OptionParser &op, float* matrix, int imageS
         // Copy data from device memory to main memory
         checkCudaErrors(cudaEventRecord(start, 0));
 
-        if (uvm) {
+        if (uvm || zero_copy) {
             // do nothing
         } else if (uvm_advise) {
             checkCudaErrors(cudaMemAdvise(J_cuda, sizeof(float) * size_I, cudaMemAdviseSetPreferredLocation, cudaCpuDeviceId));
@@ -456,7 +460,7 @@ float srad(ResultDatabase &resultDB, OptionParser &op, float* matrix, int imageS
         }
     }
 
-    if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise) {
+    if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise || zero_copy) {
         checkCudaErrors(cudaFree(C_cuda));
         checkCudaErrors(cudaFree(J_cuda));
         checkCudaErrors(cudaFree(E_C));
