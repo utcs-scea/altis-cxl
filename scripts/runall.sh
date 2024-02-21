@@ -22,7 +22,8 @@ benchmarks2=('nw' 'lavamd' 'where' 'particlefilter_naive' 'mandelbrot' 'srad' 'f
 benchmarks=('gups' 'gemm' 'bfs' 'sort' 'pathfinder' 'nw' 'lavamd' 'where' 'particlefilter_naive' 'mandelbrot' 'srad' 'fdtd2d' 'cfd' )
 
 benchmarks=('gemm' 'nw' 'lavamd' 'where' 'particlefilter_naive' 'mandelbrot' 'srad' 'fdtd2d' 'cfd')
-benchmarks=('bfs')
+benchmarks=('where' 'bfs' 'sort' 'pathfinder' 'lavamd' 'mandelbrot' 'srad' 'cfd' )
+benchmarks=('gups')
 
 total_run=$1
 
@@ -46,14 +47,13 @@ do
         fi
         if [[ $bench == 'bfs' ]]; then
 #            $pwd/build/bin/$level/$bench --passes 1 \
-#                --uvm -o $pwd/results/$bench.csv -b $bench -i $pwd/data/bfs/bfs_16777216
-            /usr/local/cuda/bin/nsys profile --force-overwrite=true \
-                --cuda-um-gpu-page-faults=true --cuda-um-cpu-page-faults=true --cuda-memory-usage=true \
-                --export=json \
-                $pwd/build/bin/$level/$bench -s 4 --passes 1 \
-                    --uvm -o $pwd/results/$bench.csv -b $bench -i $pwd/data/bfs/bfs_16777216
+#                --uvm -o $pwd/results/$bench.csv -b $bench -i $pwd/data/bfs/bfs_16777216 \
+#                --dummy 10000 --oversub-frac 1.5
+#            /usr/local/cuda/bin/nsys profile --force-overwrite=true \
+#                --cuda-um-gpu-page-faults=true --cuda-um-cpu-page-faults=true --cuda-memory-usage=true \
+                $pwd/build/bin/$level/$bench -s 4 --passes 1 --uvm -o $pwd/results/$bench.csv -b $bench -d 1
         else
-            $pwd/build/bin/$level/$bench -s 4 --passes 1 --uvm -o $pwd/results/$bench.csv -b $bench
+            $pwd/build/bin/$level/$bench -s 4 --passes 1 --uvm -o $pwd/results/$bench.csv -b $bench -d 1
         fi
         #numactl --membind=0 --cpunodebind=0 \
         #sudo dmesg > $pwd/results/fault_counts/$bench-faults.log

@@ -20,11 +20,11 @@ benchmarks2=('nw' 'lavamd' 'where' 'particlefilter_naive' 'mandelbrot' 'srad' 'f
 
 # Running these benches
 benchmarks=('gups' 'bfs' 'sort' 'pathfinder' 'nw' 'lavamd' 'where' 'particlefilter_naive' 'mandelbrot' 'srad' 'fdtd2d' 'cfd' )
-benchmarks=('bfs')
+benchmarks=('where')
 
 total_run=$1
 
-pwd=$(pwd)
+pwd="$(dirname $(pwd))"
 mkdir -p $pwd/results
 
 for bench in "${benchmarks[@]}"
@@ -44,9 +44,8 @@ do
         fi
         /usr/local/cuda/bin/nsys profile --force-overwrite=true \
             --cuda-um-gpu-page-faults=true --cuda-um-cpu-page-faults=true --cuda-memory-usage=true \
-            --export=json -o $pwd/nsys-results/$bench-emoji \
-            $pwd/build/bin/$level/$bench -s 4 --passes 1 --emoji -o $pwd/results/$bench.csv -b $bench
-            #$pwd/build/bin/$level/$bench -s 4 --passes 1 --uvm -o $pwd/results/$bench.csv -b $bench
+            -o $pwd/nsys-results/$bench \
+            $pwd/build/bin/$level/$bench -s 4 --passes 1 --uvm -o $pwd/results/$bench.csv -b $bench
         echo "Done with $bench ${i} times..."
         sleep 3
     done

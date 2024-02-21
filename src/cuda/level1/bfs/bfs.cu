@@ -315,8 +315,7 @@ void RunBenchmark(ResultDatabase &resultDB, OptionParser &op, ofstream &ofile, s
                     printf("Executing BFS...Done.\n");
                 }
             }
-        }
-else {
+        } else {
             float time = BFSGraph(resultDB, op, no_of_nodes, edge_list_size, source, h_graph_nodes, h_graph_edges, ofile);
             if (!quiet) {
                 if (time == FLT_MAX) {
@@ -327,7 +326,6 @@ else {
             }
         }
     }
-
 	free( h_graph_nodes);
 	free( h_graph_edges);
 }

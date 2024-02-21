@@ -19,6 +19,10 @@
 #include "Utility.h"
 #include "cudacommon.h"
 
+#include <unistd.h>
+#define BYTE_PER_MB 1048576ULL
+#define MAX_MEM_SIZE 40545
+
 using namespace std;
 
 // Forward Declarations
@@ -201,6 +205,9 @@ int main(int argc, char *argv[])
         op.addOption("inputFile", OPT_STRING, "", "path of input file", 'i');
         op.addOption("outputFile", OPT_STRING, "", "path of output file", 'o');
         op.addOption("metricsFile", OPT_STRING, "", "path of file to write metrics to", 'm');
+        // (taeklim): Add dummy memory allocation to limit memory size
+        op.addOption("dummy", OPT_INT, "0", "size for allocating dummy memory in MB");
+        op.addOption("oversub-frac", OPT_FLOAT, "0", "fraction for memory oversubscription");
 
         // Add options for turn on/off CUDA features
         // (taeklim)
@@ -279,6 +286,24 @@ int main(int argc, char *argv[])
         } else {
             printf("");
         }
+ 
+        // (taeklim): Add dummy memory for memroy limitation
+        uint64_t app_mem_size_mb = op.getOptionInt("dummy");
+        if (app_mem_size_mb > 0) {
+            uint64_t dummy_size_mb = MAX_MEM_SIZE - app_mem_size_mb;
+            //uint64_t oversub_mb = op.getOptionFloat("oversub-frac") * app_mem_size_mb - app_mem_size_mb;
+            uint64_t oversub_mb = app_mem_size_mb / op.getOptionFloat("oversub-frac");
+            //dummy_size_mb = (dummy_size_mb + oversub_mb) * BYTE_PER_MB;
+            dummy_size_mb = (MAX_MEM_SIZE - oversub_mb) * BYTE_PER_MB;
+
+            size_t *dummy_h, *dummy;
+            dummy_h = (size_t*)malloc(dummy_size_mb);
+            checkCudaErrors(cudaMalloc((void**)&dummy, dummy_size_mb));
+            checkCudaErrors(cudaMemcpy(dummy, dummy_h, dummy_size_mb, cudaMemcpyHostToDevice));
+            printf("Done allocating dummy memory %ld\n", dummy_size_mb);
+            sleep(5);
+        }
+
         // Run the benchmark
         RunBenchmark(resultDB, op, ofile, sem);
         printf("Done RunBenchmark\n");

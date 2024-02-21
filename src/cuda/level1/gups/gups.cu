@@ -363,7 +363,8 @@ void RunBenchmark(ResultDatabase &DB, OptionParser &op, ofstream &ofile, sem_t *
     n = (size_t) 1 << toShifts;
   }
   if (op.getOptionInt("size") == 4) {
-      n = 1342177280; // 10 GB
+      //n = 1342177280; // 10 GB
+      n = 671088640; // 5 GB
   }
   std::cout << "Total passes = " << passes << std::endl;
   std::cout << "Total table size = " << n << " (" << n*sizeof(uint64_t) << " bytes.)" << std::endl;

@@ -64,7 +64,6 @@ void addBenchmarkSpecOptions(OptionParser &op) {}
 // Add UVM support
 //
 // ****************************************************************************
-//void RunBenchmark(ResultDatabase &resultDB, OptionParser &op) {
 void RunBenchmark(ResultDatabase &resultDB, OptionParser &op, ofstream &ofile, sem_t *sem) {
     cout << "Running Sort" << endl;
   srand(SEED);
