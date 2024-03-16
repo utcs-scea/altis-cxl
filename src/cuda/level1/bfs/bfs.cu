@@ -150,6 +150,8 @@ float BFSGraph(ResultDatabase &resultDB, OptionParser &op, int no_of_nodes, int 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 float BFSGraphUnifiedMemory(ResultDatabase &resultDB, OptionParser &op, int no_of_nodes, int edge_list_size, int source, Node* &h_graph_nodes, int* &h_graph_edges, ofstream &ofile);
+// (taeklim)
+float BFSEmoji(ResultDatabase &resultDB, OptionParser &op, int no_of_nodes, int edge_list_size, int source, Node* &h_graph_nodes, int* &h_graph_edges, ofstream &ofile);
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -167,8 +169,6 @@ float BFSGraphUnifiedMemory(ResultDatabase &resultDB, OptionParser &op, int no_o
 /// <param name="no_of_nodes">				The no of nodes. </param>
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-// (taeklim)
-float BFSEmoji(ResultDatabase &resultDB, OptionParser &op, int no_of_nodes, int edge_list_size, int source, Node* &h_graph_nodes, int* &h_graph_edges, ofstream &ofile);
 
 __global__ void Kernel(Node* g_graph_nodes, int* g_graph_edges, bool* g_graph_mask, bool* g_updating_graph_mask, bool *g_graph_visited, int* g_cost, int no_of_nodes) {
     int tid = (blockIdx.x * MAX_THREADS_PER_BLOCK) + threadIdx.x;

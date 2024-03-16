@@ -23,7 +23,7 @@ benchmarks=('gups' 'gemm' 'bfs' 'sort' 'pathfinder' 'nw' 'lavamd' 'where' 'parti
 
 benchmarks=('gemm' 'nw' 'lavamd' 'where' 'particlefilter_naive' 'mandelbrot' 'srad' 'fdtd2d' 'cfd')
 benchmarks=('where' 'bfs' 'sort' 'pathfinder' 'lavamd' 'mandelbrot' 'srad' 'cfd' )
-benchmarks=('gups')
+benchmarks=('where')
 
 total_run=$1
 
@@ -45,16 +45,10 @@ do
             echo "not on listed\n"
             exit 0
         fi
-        if [[ $bench == 'bfs' ]]; then
-#            $pwd/build/bin/$level/$bench --passes 1 \
-#                --uvm -o $pwd/results/$bench.csv -b $bench -i $pwd/data/bfs/bfs_16777216 \
-#                --dummy 10000 --oversub-frac 1.5
-#            /usr/local/cuda/bin/nsys profile --force-overwrite=true \
-#                --cuda-um-gpu-page-faults=true --cuda-um-cpu-page-faults=true --cuda-memory-usage=true \
-                $pwd/build/bin/$level/$bench -s 4 --passes 1 --uvm -o $pwd/results/$bench.csv -b $bench -d 1
-        else
-            $pwd/build/bin/$level/$bench -s 4 --passes 1 --uvm -o $pwd/results/$bench.csv -b $bench -d 1
-        fi
+
+#        /usr/local/cuda/bin/nsys profile --force-overwrite=true \
+#            --cuda-um-gpu-page-faults=true --cuda-um-cpu-page-faults=true --cuda-memory-usage=true \
+            $pwd/build/bin/$level/$bench -s 4 --passes 1 --zero-copy -o $pwd/results/$bench.csv -b $bench 
         #numactl --membind=0 --cpunodebind=0 \
         #sudo dmesg > $pwd/results/fault_counts/$bench-faults.log
         echo "Done with $bench ${i} times..."

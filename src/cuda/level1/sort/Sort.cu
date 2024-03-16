@@ -302,6 +302,21 @@ void RunBenchmark(ResultDatabase &resultDB, OptionParser &op, ofstream &ofile, s
     }
 
     checkCudaErrors(cudaEventRecord(start, 0));
+    
+    // (taeklim): Check if we can know host initilized or not
+//    cudaPointerAttributes attr;
+//    cudaPointerAttributes attr_temp;
+//    checkCudaErrors(cudaPointerGetAttributes(&attr, dKeys));
+//    checkCudaErrors(cudaPointerGetAttributes(&attr_temp, dTempKeys));
+//    if (attr.devicePointer != NULL) {
+//        printf("dKeys memorytype:%d\n", attr.type);
+//    }
+//    if (attr_temp.devicePointer != NULL) {
+//        printf("dTempKeys memorytype:%d\n", attr.type);
+//    }
+//    if (dTempKeys != NULL) {
+//        printf("%d\n", dTempKeys[0]);
+//    }
 
     // Perform Radix Sort (4 bits at a time)
     for (int i = 0; i < SORT_BITS; i += 4) {

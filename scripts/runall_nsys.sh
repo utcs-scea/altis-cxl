@@ -19,8 +19,8 @@ benchmarks1=('gups' 'bfs' 'sort' 'pathfinder' 'gemm')
 benchmarks2=('nw' 'lavamd' 'where' 'particlefilter_naive' 'mandelbrot' 'srad' 'fdtd2d' 'cfd' )
 
 # Running these benches
-benchmarks=('gups' 'bfs' 'sort' 'pathfinder' 'nw' 'lavamd' 'where' 'particlefilter_naive' 'mandelbrot' 'srad' 'fdtd2d' 'cfd' )
-benchmarks=('where')
+benchmarks=('bfs' 'sort' 'pathfinder' 'nw' 'lavamd' 'where' 'particlefilter_naive' 'mandelbrot' 'srad' 'fdtd2d' 'cfd' )
+benchmarks=('gups')
 
 total_run=$1
 
@@ -44,7 +44,7 @@ do
         fi
         /usr/local/cuda/bin/nsys profile --force-overwrite=true \
             --cuda-um-gpu-page-faults=true --cuda-um-cpu-page-faults=true --cuda-memory-usage=true \
-            -o $pwd/nsys-results/$bench \
+            -o $pwd/nsys-results/size_4/$bench \
             $pwd/build/bin/$level/$bench -s 4 --passes 1 --uvm -o $pwd/results/$bench.csv -b $bench
         echo "Done with $bench ${i} times..."
         sleep 3

@@ -243,6 +243,7 @@ void where(ResultDatabase &resultDB, OptionParser &op, int size, int coverage, o
     checkCudaErrors(cudaEventElapsedTime(&elapsedTime, start, stop));
     transferTime += elapsedTime * 1.e-3;
     matchSize++;
+    cout << "matchsize: " << matchSize << endl;
 
     if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise || zero_copy) {
         checkCudaErrors(cudaMallocManaged( (void**) &d_final, sizeof(int) * matchSize));
@@ -352,6 +353,7 @@ void RunBenchmark(ResultDatabase &resultDB, OptionParser &op, ofstream &ofile, s
         int coverages[5] = {20, 30, 40, 80, 240};
         size = sizes[op.getOptionInt("size") - 1];
         coverage = coverages[op.getOptionInt("size") - 1];
+        coverage = 20;
     }
 
     if (!quiet) {
