@@ -547,6 +547,7 @@ void mandelbrot(ResultDatabase &resultDB, OptionParser &op, int size, int MAX_DW
 	const bool uvm = op.getOptionBool("uvm");
 	const bool zero_copy = op.getOptionBool("zero-copy");
 	const bool copy = op.getOptionBool("copy");
+	const bool dha = op.getOptionBool("dha");
 	const bool pageable = op.getOptionBool("pageable");
 	const bool uvm_advise = op.getOptionBool("uvm-advise");
 	const bool uvm_prefetch = op.getOptionBool("uvm-prefetch");
@@ -571,6 +572,10 @@ void mandelbrot(ResultDatabase &resultDB, OptionParser &op, int size, int MAX_DW
 	} else if (copy) {
 		checkCudaErrors(cudaMalloc((void**)&d_dwells, dwell_sz));
 		checkCudaErrors(cudaMallocHost((void**)&h_dwells, dwell_sz));
+    } else if (dha) {
+		checkCudaErrors(cudaHostAlloc(&d_dwells, dwell_sz, cudaHostAllocDefault));
+        memset(d_dwells, 1, dwell_sz);
+		//checkCudaErrors(cudaHostAlloc(&h_dwells, dwell_sz));
     }
     // mandelbrot does not memcpy before the kernel launch, so single barrier
     // for both uvm and pageable
@@ -623,11 +628,14 @@ void mandelbrot(ResultDatabase &resultDB, OptionParser &op, int size, int MAX_DW
     transferTime += elapsed * 1.e-3;
 
 	// free data
-	checkCudaErrors(cudaFree(d_dwells));
-	if (!uvm && !uvm_prefetch && !uvm_advise && !uvm_prefetch_advise && !copy && !zero_copy) {
+	if (!uvm && !uvm_prefetch && !uvm_advise && !uvm_prefetch_advise && !copy && !zero_copy && !dha) {
+        checkCudaErrors(cudaFree(d_dwells));
 		free(h_dwells);
 	} else if (copy) {
+        checkCudaErrors(cudaFree(d_dwells));
         cudaFreeHost(h_dwells);
+    } else if (dha) {
+        checkCudaErrors(cudaFreeHost(d_dwells));
     }
 }
 

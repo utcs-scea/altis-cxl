@@ -29,7 +29,7 @@ benchmarks=('gups' 'bfs' 'gemm' 'sort' 'pathfinder' 'nw' 'lavamd' 'where' 'parti
 benchmarks=('cfd' 'pathfinder' 'lavamd' 'mandelbrot' 'srad')
 
 benchmarks=('where' 'bfs' 'sort' 'cfd' 'lavamd' 'mandelbrot' 'srad' 'pathfinder')
-benchmarks=('where')
+benchmarks=('sort')
 
 
 pwd="$(dirname $(pwd))"
@@ -64,7 +64,7 @@ do
 #    sleep 1
 
     ncu --metrics pcie__read_bytes.sum \
-        --log-file $pwd/ncu-results/where-struct/$bench-struct-20-read.csv --csv \
+        --log-file $pwd/ncu-results/sort-struct/$bench-struct-read.csv --csv \
         $pwd/build/bin/$level/$bench -s 4 --passes 1 \
         --uvm -o $pwd/results/$bench.csv -b $bench 
         #--uvm -o $pwd/results/$bench.csv -b $bench --dummy $dummy_var --oversub-frac 1.2
@@ -74,7 +74,7 @@ do
     echo 3 | sudo tee /proc/sys/vm/drop_caches
     sudo dmesg -C
     ncu --metrics pcie__read_bytes.sum \
-        --log-file $pwd/ncu-results/where-struct/$bench-struct-20-zero.csv --csv \
+        --log-file $pwd/ncu-results/sort-struct/$bench-struct-zero.csv --csv \
         $pwd/build/bin/$level/$bench -s 4 --passes 1 \
         --zero-copy -o $pwd/results/$bench.csv -b $bench 
 done

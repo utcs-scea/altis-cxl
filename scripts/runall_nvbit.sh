@@ -34,7 +34,7 @@ benchmarks=('where' 'bfs' 'sort' 'cfd')
 benchmarks=('pathfinder' 'lavamd' 'mandelbrot' 'srad')
 
 benchmarks=('where' 'bfs' 'sort' 'cfd' 'pathfinder' 'lavamd' 'mandelbrot' 'srad')
-benchmarks=('gups' 'nw' 'particlefilter_naive' 'fdtd2d')
+benchmarks=('where' 'sort')
 
 
 for bench in "${benchmarks[@]}"
@@ -65,7 +65,7 @@ do
     echo "<<<<< Running $bench without nvbit mem_trace >>>>>"
     LD_PRELOAD=$NVBIT_PATH/mem_trace/mem_trace.so $pwd/build/bin/$level/$bench -s 4 --passes 1 \
         --uvm -o $pwd/results/$bench.csv -b $bench
-    mv $pwd/output.csv $pwd/nvbit-results/$bench.csv
+    mv $pwd/output.csv $pwd/nvbit-results/$bench-struct.csv
 #    sudo mv /disk/tkim/mem_trace/output.csv /disk/tkim/mem_trace/$bench\_trace.log
 #    sudo dmesg > /disk/tkim/mem_trace/$bench\_dmesg.log
     echo "<<<<< Done nvbit mem_trace >>>>>"

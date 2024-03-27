@@ -8,7 +8,8 @@
 
 #ifndef SORT_H_
 #define SORT_H_
-
+#include <stdint.h>
+#include <cuda.h>
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 /// <summary>	Defines an alias representing an unsigned integer. </summary>
 ///
@@ -24,6 +25,15 @@ static const int SCAN_BLOCK_SIZE = 256;
 /// <summary>	The sort bits. </summary>
 static const int SORT_BITS = 32;
 
+// 128 Byte structure
+#define ELEM_NUM 32
+typedef struct val {
+    uint vals[ELEM_NUM];
+} val;
+
+typedef struct key {
+    uint keys[ELEM_NUM];
+} key;
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 /// <summary>	Radix sort step. </summary>
@@ -44,8 +54,8 @@ static const int SORT_BITS = 32;
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 void
-radixSortStep(uint nbits, uint startbit, uint4* keys, uint4* values,
-        uint4* tempKeys, uint4* tempValues, uint* counters,
+radixSortStep(uint nbits, uint startbit, key* keys, val* values,
+        key* tempKeys, val* tempValues, uint* counters,
         uint* countersSum, uint* blockOffsets, uint** scanBlockSums,
         uint numElements);
 
@@ -81,7 +91,7 @@ scanArrayRecursive(uint* outArray, uint* inArray, int numElements, int level,
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 bool
-verifySort(uint *keys, uint* vals, const size_t size, bool verbose, bool quiet);
+verifySort(key *keys, val *vals, const size_t size, bool verbose, bool quiet);
 
 #ifdef __DEVICE_EMULATION__
 

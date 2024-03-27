@@ -377,7 +377,7 @@ void RunBenchmark(ResultDatabase &DB, OptionParser &op, ofstream &ofile, sem_t *
 
     cudaDeviceProp prop;
     checkCudaErrors(cudaGetDeviceProperties(&prop, device));
-    checkCudaErrors(cudaSetDevice(dev));
+    //checkCudaErrors(cudaSetDevice(dev));
     printf("Using GPU %d of %d GPUs.\n", dev, ndev);
     printf("Warp size = %d.\n", prop.warpSize);
     printf("Multi-processor count = %d.\n", prop.multiProcessorCount);
@@ -388,24 +388,30 @@ void RunBenchmark(ResultDatabase &DB, OptionParser &op, ofstream &ofile, sem_t *
     benchtype *h_t = NULL;
     cudaEvent_t begin, end;
 
-    // (taeklim): Disable direct peer-to-peer access
 //    checkCudaErrors(cudaDeviceDisablePeerAccess(0));
 //    checkCudaErrors(cudaDeviceDisablePeerAccess(1));
 
-    int gpu_num = 1;
+    int gpu_num = 2;
     for (int gpu = 0; gpu < gpu_num; gpu++) {
-        //checkCudaErrors(cudaSetDevice(gpu));
+        printf("Set device%d\n", gpu);
+        checkCudaErrors(cudaSetDevice(gpu));
         checkCudaErrors(cudaEventCreate(&begin));
         checkCudaErrors(cudaEventCreate(&end));
 
         if (uvm) {
-            if (gpu == 0) {
+            if (gpu == 0 && gpu_num > 1) {
                 checkCudaErrors(cudaMallocManaged((void **)&d_t, n * sizeof(benchtype)));
                 memset(d_t, 1,  n * sizeof(benchtype));
+                checkCudaErrors(cudaMemPrefetchAsync(d_t, n * sizeof(benchtype), 0));
+                checkCudaErrors(cudaEventDestroy(end));
+                checkCudaErrors(cudaEventDestroy(begin));
+                cudaStreamSynchronize(0);
+                printf("Done prefetch\n");
+                continue;
                 //checkCudaErrors(cudaMemAdvise(d_t, n * sizeof(benchtype), cudaMemAdviseSetPreferredLocation, gpu));
-            } else {
-                //cudaMemset(d_t, 1,  n * sizeof(benchtype));
-                checkCudaErrors(cudaMemAdvise(d_t, n * sizeof(benchtype), cudaMemAdviseSetPreferredLocation, gpu));
+            } else if (gpu_num == 1) {
+                checkCudaErrors(cudaMallocManaged((void **)&d_t, n * sizeof(benchtype)));
+                memset(d_t, 1,  n * sizeof(benchtype));
             }
             printf("[uvm] Done init\n");
             checkCudaErrors(cudaEventRecord(begin));
@@ -508,6 +514,9 @@ void RunBenchmark(ResultDatabase &DB, OptionParser &op, ofstream &ofile, sem_t *
             double gups = 4 * n / ((double)totalTime * 1.0e-6);
             DB.AddResult("Giga Updates per second", atts, "GUP/s", gups);
         }
+
+//        if (gpu == 0)
+//            checkCudaErrors(cudaMemAdvise(d_t, n * sizeof(benchtype), cudaMemAdviseUnsetPreferredLocation, gpu));
         checkCudaErrors(cudaEventDestroy(end));
         checkCudaErrors(cudaEventDestroy(begin));
         cudaDeviceSynchronize();

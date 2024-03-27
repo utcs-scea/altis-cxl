@@ -26,13 +26,15 @@
 
 using namespace std;
 
+// 128 Byte structure
+#define ELEM_NUM 32
+typedef struct val {
+    uint vals[ELEM_NUM];
+} val;
 
-//inline __host__ __device__ uint4 make_uint4(uint s)
-inline __host__ __device__ uint4 make_uint4(uint s)
-{
-    printf("%ld\n", s);
-    return make_uint4(s, s, s, s);
-}
+typedef struct key {
+    uint keys[ELEM_NUM];
+} key;
 
 // ****************************************************************************
 // Function: addBenchmarkSpecOptions
@@ -105,13 +107,9 @@ void RunBenchmark(ResultDatabase &resultDB, OptionParser &op, ofstream &ofile, s
     inputFile >> size;
   }
   bytes = size * sizeof(uint);
-  //size = size / ELEM_NUM;
-  size = bytes / ELEM_NUM;
-
-//  size = size / ELEM_NUM;
-//  bytes = size * sizeof(val);
-
-  printf("Size: %d items, Bytes: %lld\n", size, bytes);
+  if(!quiet) {
+    printf("Size: %d items, Bytes: %lld\n", size, bytes);
+  }
 
   // If input file given, populate array
   uint *sourceInput = (uint *)malloc(bytes);
@@ -122,16 +120,11 @@ void RunBenchmark(ResultDatabase &resultDB, OptionParser &op, ofstream &ofile, s
   }
 
   // create input data on CPU
-  key *hKeys = NULL;
-  val *hVals = NULL;
-//  uint **hKeys = NULL;
-//  uint **hVals = NULL;
+  uint *hKeys = NULL;
+  uint *hVals = NULL;
 
   // Allocate device mem for sorting kernels
-  key *dKeys, *dTempKeys;
-  val *dVals, *dTempVals;
-//  uint **dKeys, **dTempKeys;
-//  uint **dVals, **dTempVals;
+  uint *dKeys, *dVals, *dTempKeys, *dTempVals;
 
   ////////////////////////////////////////////////////////////////////////////////////////////////////
   /// <summary>	allocate using UVM API. </summary>
@@ -150,8 +143,8 @@ void RunBenchmark(ResultDatabase &resultDB, OptionParser &op, ofstream &ofile, s
       checkCudaErrors(cudaMallocHost((void **)&dKeys, bytes));
       checkCudaErrors(cudaMallocHost((void **)&dVals, bytes));
   } else if (pageable) {
-      hKeys = (key *)malloc(bytes);
-      hVals = (val *)malloc(bytes);
+      hKeys = (uint *)malloc(bytes);
+      hVals = (uint *)malloc(bytes);
   }
 
   // Allocate space for block sums in the scan kernel.
@@ -249,14 +242,12 @@ void RunBenchmark(ResultDatabase &resultDB, OptionParser &op, ofstream &ofile, s
     }
 /// <summary>	Initialize host memory to some pattern. </summary>
     for (uint i = 0; i < size; i++) {
-        uint temp_val = i % 1024;
-        hKeys[i / 4].keys[i % 4] = temp_val;
-        if (filePath == "") {
-            temp_val = rand() % 1024;
-            hVals[i / 4].vals[i % 4] = rand() % 1024;
-        } else {
-            //hVals[i].vals[j] = sourceInput[i*ELEM_NUM + j];
-        }
+      hKeys[i] = i % 1024;
+      if (filePath == "") {
+        hVals[i] = rand() % 1024;
+      } else {
+        hVals[i] = sourceInput[i];
+      }
     }
 
     // Copy inputs to GPU
@@ -322,10 +313,25 @@ void RunBenchmark(ResultDatabase &resultDB, OptionParser &op, ofstream &ofile, s
 
     checkCudaErrors(cudaEventRecord(start, 0));
     
+    // (taeklim): Check if we can know host initilized or not
+//    cudaPointerAttributes attr;
+//    cudaPointerAttributes attr_temp;
+//    checkCudaErrors(cudaPointerGetAttributes(&attr, dKeys));
+//    checkCudaErrors(cudaPointerGetAttributes(&attr_temp, dTempKeys));
+//    if (attr.devicePointer != NULL) {
+//        printf("dKeys memorytype:%d\n", attr.type);
+//    }
+//    if (attr_temp.devicePointer != NULL) {
+//        printf("dTempKeys memorytype:%d\n", attr.type);
+//    }
+//    if (dTempKeys != NULL) {
+//        printf("%d\n", dTempKeys[0]);
+//    }
+
     // Perform Radix Sort (4 bits at a time)
     for (int i = 0; i < SORT_BITS; i += 4) {
-      radixSortStep(4, i, dKeys, dVals, dTempKeys,
-                    dTempVals, dCounters, dCounterSums, dBlockOffsets,
+      radixSortStep(4, i, (uint4 *)dKeys, (uint4 *)dVals, (uint4 *)dTempKeys,
+                    (uint4 *)dTempVals, dCounters, dCounterSums, dBlockOffsets,
                     scanBlockSums, size);
     }
     checkCudaErrors(cudaEventRecord(stop, 0));
@@ -440,8 +446,8 @@ void RunBenchmark(ResultDatabase &resultDB, OptionParser &op, ofstream &ofile, s
 // origin: SHOC (https://github.com/vetter/shoc)
 //
 // ****************************************************************************
-void radixSortStep(uint nbits, uint startbit, key *keys, val *values,
-                   key *tempKeys, val *tempValues, uint *counters,
+void radixSortStep(uint nbits, uint startbit, uint4 *keys, uint4 *values,
+                   uint4 *tempKeys, uint4 *tempValues, uint *counters,
                    uint *countersSum, uint *blockOffsets, uint **scanBlockSums,
                    uint numElements) {
   // Threads handle either 4 or two elements each
@@ -457,26 +463,18 @@ void radixSortStep(uint nbits, uint startbit, key *keys, val *values,
   radixSortBlocks<<<radixBlocks, SORT_BLOCK_SIZE,
                     4 * sizeof(uint) * SORT_BLOCK_SIZE>>>(
       nbits, startbit, tempKeys, tempValues, keys, values);
-  checkCudaErrors(cudaDeviceSynchronize());
-  printf("Done radixSort\n");
 
   findRadixOffsets<<<findBlocks, SCAN_BLOCK_SIZE,
                      2 * SCAN_BLOCK_SIZE * sizeof(uint)>>>(
-      tempKeys, counters, blockOffsets, startbit, numElements,
-      //(uint2 *)tempKeys, counters, blockOffsets, startbit, numElements,
+      (uint2 *)tempKeys, counters, blockOffsets, startbit, numElements,
       findBlocks);
-  checkCudaErrors(cudaDeviceSynchronize());
 
   scanArrayRecursive(countersSum, counters, 16 * reorderBlocks, 0,
                      scanBlockSums);
 
   reorderData<<<reorderBlocks, SCAN_BLOCK_SIZE>>>(
-      startbit, keys, values, tempKeys,
-      tempValues, blockOffsets, countersSum, counters, reorderBlocks);
-  checkCudaErrors(cudaDeviceSynchronize());
-//      startbit, (uint *)keys, (uint *)values, (uint2 *)tempKeys,
-//      (uint2 *)tempValues, blockOffsets, countersSum, counters, reorderBlocks);
-
+      startbit, (uint *)keys, (uint *)values, (uint2 *)tempKeys,
+      (uint2 *)tempValues, blockOffsets, countersSum, counters, reorderBlocks);
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -535,16 +533,16 @@ void scanArrayRecursive(uint *outArray, uint *inArray, int numElements,
 /// <returns>	True if it succeeds, false if it fails. </returns>
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-bool verifySort(key *keys, val *vals, const size_t size, bool verbose, bool quiet) {
+bool verifySort(uint *keys, uint *vals, const size_t size, bool verbose, bool quiet) {
   bool passed = true;
   for (unsigned int i = 0; i < size - 1; i++) {
-    if (keys[i/4].keys[i%4] > keys[(i + 1)/4].keys[(i+1)%4]) {
+    if (keys[i] > keys[i + 1]) {
       passed = false;
       if(verbose && !quiet)  {
           cout << "Failure: at idx: " << i << endl;
-          cout << "Key: " << keys[i].keys[0] << " Val: " << vals[i].vals[0] << endl;
-          cout << "Idx: " << i + 1 << " Key: " << keys[i + 1].keys[0]
-              << " Val: " << vals[i + 1].vals[0] << endl;
+          cout << "Key: " << keys[i] << " Val: " << vals[i] << endl;
+          cout << "Idx: " << i + 1 << " Key: " << keys[i + 1]
+              << " Val: " << vals[i + 1] << endl;
       }
     }
   }

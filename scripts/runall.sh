@@ -23,7 +23,9 @@ benchmarks=('gups' 'gemm' 'bfs' 'sort' 'pathfinder' 'nw' 'lavamd' 'where' 'parti
 
 benchmarks=('gemm' 'nw' 'lavamd' 'where' 'particlefilter_naive' 'mandelbrot' 'srad' 'fdtd2d' 'cfd')
 benchmarks=('where' 'bfs' 'sort' 'pathfinder' 'lavamd' 'mandelbrot' 'srad' 'cfd' )
+benchmarks=('mandelbrot' 'lavamd' 'pathfinder' 'cfd' 'srad' 'sort' 'where')
 benchmarks=('where')
+configs=('zero-copy')
 
 total_run=$1
 
@@ -32,26 +34,28 @@ mkdir -p $pwd/results
 
 for bench in "${benchmarks[@]}"
 do
-    for i in $(seq 1 $total_run)
+    for config in "${configs[@]}"
     do
-        echo 3 | sudo tee /proc/sys/vm/drop_caches
-        sudo dmesg -C
+        for i in $(seq 1 $total_run)
+        do
+            echo 3 | sudo tee /proc/sys/vm/drop_caches
+            sudo dmesg -C
 
-        if [[ ${benchmarks1[@]} =~ $bench ]]; then
-            level=level1
-        elif [[ ${benchmarks2[@]} =~ $bench ]]; then
-            level=level2
-        else 
-            echo "not on listed\n"
-            exit 0
-        fi
-
-#        /usr/local/cuda/bin/nsys profile --force-overwrite=true \
-#            --cuda-um-gpu-page-faults=true --cuda-um-cpu-page-faults=true --cuda-memory-usage=true \
-            $pwd/build/bin/$level/$bench -s 4 --passes 1 --zero-copy -o $pwd/results/$bench.csv -b $bench 
-        #numactl --membind=0 --cpunodebind=0 \
-        #sudo dmesg > $pwd/results/fault_counts/$bench-faults.log
-        echo "Done with $bench ${i} times..."
-        sleep 3
+            if [[ ${benchmarks1[@]} =~ $bench ]]; then
+                level=level1
+            elif [[ ${benchmarks2[@]} =~ $bench ]]; then
+                level=level2
+            else 
+                echo "not on listed\n"
+                exit 0
+            fi
+            #numactl --membind=0 --cpunodebind=0 \
+#            /usr/local/cuda/bin/nsys profile --force-overwrite=true \
+#                --cuda-um-gpu-page-faults=true --cuda-um-cpu-page-faults=true --cuda-memory-usage=true \
+            $pwd/build/bin/$level/$bench -s 4 --passes 1 --$config -b $bench  --coal
+            #$pwd/build/bin/$level/$bench -s 4 --passes 1 --$config -o $pwd/results/$bench-$config.csv -b $bench 
+            echo "Done with $bench ${i} times..."
+            sleep 3
+        done
     done
 done

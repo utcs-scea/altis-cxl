@@ -57,8 +57,9 @@ typedef unsigned int uint;
 /// <param name="valuesIn"> 	[in,out] If non-null, the values in. </param>
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-__global__ void radixSortBlocks(uint nbits, uint startbit, uint4* keysOut,
-        uint4* valuesOut, uint4* keysIn, uint4* valuesIn);
+__global__ void radixSortBlocks(uint nbits, uint startbit, key* keysOut,
+        //uint4* valuesOut, uint4* keysIn, uint4* valuesIn);
+        val* valuesOut, key* keysIn, val* valuesIn);
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 /// <summary>	Searches for the first radix offsets. </summary>
@@ -73,7 +74,9 @@ __global__ void radixSortBlocks(uint nbits, uint startbit, uint4* keysOut,
 /// <param name="totalBlocks"> 	The total blocks. </param>
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-__global__ void findRadixOffsets(uint2* keys, uint* counters,
+//__global__ void findRadixOffsets(uint2* keys, uint* counters,
+//        uint* blockOffsets, uint startbit, uint numElements, uint totalBlocks);
+__global__ void findRadixOffsets(key* keys, uint* counters,
         uint* blockOffsets, uint startbit, uint numElements, uint totalBlocks);
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -91,9 +94,10 @@ __global__ void findRadixOffsets(uint2* keys, uint* counters,
 /// <param name="sizes">	   	[in,out] If non-null, the sizes. </param>
 /// <param name="totalBlocks"> 	The total blocks. </param>
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-
-__global__ void reorderData(uint startbit, uint *outKeys, uint *outValues,
-        uint2 *keys, uint2 *values, uint *blockOffsets, uint *offsets,
+//__global__ void reorderData(uint startbit, uint *outKeys, uint *outValues,
+//        uint2 *keys, uint2 *values, uint *blockOffsets, uint *offsets,
+__global__ void reorderData(uint startbit, key *outKeys, val *outValues,
+        key *keys, val *values, uint *blockOffsets, uint *offsets,
         uint *sizes, uint totalBlocks);
 
 // Scan Kernels

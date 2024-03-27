@@ -2,6 +2,7 @@
 *.nsys-rep
 *.json
 ncu-results
+scripts/*.txt
 
 build
 *.vscode*

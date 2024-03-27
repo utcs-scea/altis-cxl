@@ -112,6 +112,84 @@ __device__ uint4 scan4(uint4 idata, uint* ptr)
 /// <param name="valuesIn"> 	[in,out] If non-null, the values in. </param>
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
+__device__ void radixSortBlocksInternal(const uint nbits, const uint startbit,
+                              uint4* keysOut, uint4* valuesOut,
+                              uint4* keysIn,  uint4* valuesIn, uint tid, uint localSize) {
+    __shared__ uint sMem[512];
+    uint4 key, value;
+    key = keysIn[0];
+    value = valuesIn[0];
+
+    // For each of the 4 bits
+    for(uint shift = startbit; shift < (startbit + nbits); ++shift)
+    {
+        // Check if the LSB is 0
+        uint4 lsb;
+        lsb.x = !((key.x >> shift) & 0x1);
+        lsb.y = !((key.y >> shift) & 0x1);
+        lsb.z = !((key.z >> shift) & 0x1);
+        lsb.w = !((key.w >> shift) & 0x1);
+
+        // Do an exclusive scan of how many elems have 0's in the LSB
+        // When this is finished, address.n will contain the number of
+        // elems with 0 in the LSB which precede elem n
+        uint4 address = scan4(lsb, sMem);
+
+        __shared__ uint numtrue;
+
+        // Store the total number of elems with an LSB of 0
+        // to shared mem
+        if (tid == localSize - 1)
+        {
+            numtrue = address.w + lsb.w;
+        }
+        __syncthreads();
+
+        // Determine rank -- position in the block
+        // If you are a 0 --> your position is the scan of 0's
+        // If you are a 1 --> your position is calculated as below
+        uint4 rank;
+        const int idx = tid*4;
+        rank.x = lsb.x ? address.x : numtrue + idx     - address.x;
+        rank.y = lsb.y ? address.y : numtrue + idx + 1 - address.y;
+        rank.z = lsb.z ? address.z : numtrue + idx + 2 - address.z;
+        rank.w = lsb.w ? address.w : numtrue + idx + 3 - address.w;
+
+        // Scatter keys into local mem
+        sMem[(rank.x & 3) * localSize + (rank.x >> 2)] = key.x;
+        sMem[(rank.y & 3) * localSize + (rank.y >> 2)] = key.y;
+        sMem[(rank.z & 3) * localSize + (rank.z >> 2)] = key.z;
+        sMem[(rank.w & 3) * localSize + (rank.w >> 2)] = key.w;
+        __syncthreads();
+
+        // Read keys out of local mem into registers, in prep for
+        // write out to global mem
+        key.x = sMem[tid];
+        key.y = sMem[tid +     localSize];
+        key.z = sMem[tid + 2 * localSize];
+        key.w = sMem[tid + 3 * localSize];
+        __syncthreads();
+
+        // Scatter values into local mem
+        sMem[(rank.x & 3) * localSize + (rank.x >> 2)] = value.x;
+        sMem[(rank.y & 3) * localSize + (rank.y >> 2)] = value.y;
+        sMem[(rank.z & 3) * localSize + (rank.z >> 2)] = value.z;
+        sMem[(rank.w & 3) * localSize + (rank.w >> 2)] = value.w;
+        __syncthreads();
+
+        // Read keys out of local mem into registers, in prep for
+        // write out to global mem
+        value.x = sMem[tid];
+        value.y = sMem[tid +     localSize];
+        value.z = sMem[tid + 2 * localSize];
+        value.w = sMem[tid + 3 * localSize];
+        __syncthreads();
+    }
+
+    keysOut[0] = key;
+    valuesOut[0] = value;
+}
+
 __global__ void radixSortBlocks(const uint nbits, const uint startbit,
                               key* keysOut, val* valuesOut,
                               key* keysIn,  val* valuesIn)
@@ -250,13 +328,16 @@ __global__ void findRadixOffsets(key* keys, uint* counters,
     uint groupSize = blockDim.x;
 
     uint2 radix2;
+    //radix2 = *reinterpret_cast<uint2 *>(keys[threadIdx.x + (blockIdx.x * blockDim.x)].keys[0]);
+    //uint temp_key = keys[threadIdx.x + (blockIdx.x * blockDim.x)].keys[0];
+    //radix2 = make_uint2(temp_key, temp_key);
     uint tid = threadIdx.x + (blockIdx.x * blockDim.x);
-    uint key_id = tid / 2;
-    uint sub_key_id = tid % 2;
-    uint2 *key_arr = (uint2 *)keys[key_id].keys;
-    radix2 = key_arr[sub_key_id];
-//    uint2 *key_arr = (uint2 *)keys[tid].keys;
-//    radix2 = key_arr[0];
+    uint a_tid = tid / 2;
+    uint b_tid = tid % 2;
+    uint2 *key_arr;
+    key_arr = (uint2 *)keys[a_tid].keys;
+    radix2 = key_arr[b_tid];
+
 
     sRadix1[2 * localId]     = (radix2.x >> startbit) & 0xF;
     sRadix1[2 * localId + 1] = (radix2.y >> startbit) & 0xF;
@@ -367,17 +448,19 @@ __global__ void reorderData(uint  startbit,
 
     uint i = blockId * blockDim.x + threadIdx.x;
 
+//    sKeys2[threadIdx.x]   = *reinterpret_cast<uint2 *>(keys[i].keys[0]);
+//    sValues2[threadIdx.x] = *reinterpret_cast<uint2 *>(values[i].vals[0]);
+//    sKeys2[threadIdx.x]   = make_uint2(keys[i].keys[0], keys[i].keys[0]);
+//    sValues2[threadIdx.x]   = make_uint2(values[i].vals[0], values[i].vals[0]);
+
     uint tid = threadIdx.x + (blockIdx.x * blockDim.x);
-    uint first_id = tid / 2;
-    uint sub_id = tid % 2;
-    uint2 *key_inarr = (uint2 *)keys[first_id].keys;
-    uint2 *val_inarr = (uint2 *)values[first_id].vals;
-    sKeys2[threadIdx.x] = key_inarr[sub_id];
-    sValues2[threadIdx.x] = val_inarr[sub_id];
-//    uint2 *key_inarr = (uint2 *)keys[tid].keys;
-//    uint2 *val_inarr = (uint2 *)values[tid].vals;
-//    sKeys2[threadIdx.x] = key_inarr[0];
-//    sValues2[threadIdx.x] = val_inarr[0];
+    uint a_tid2 = tid / 2;
+    uint b_tid2 = tid % 2;
+    uint2 *key_inarr = (uint2 *)keys[a_tid2].keys;
+    uint2 *val_inarr = (uint2 *)values[a_tid2].vals;
+    sKeys2[threadIdx.x] = key_inarr[b_tid2];
+    sValues2[threadIdx.x] = val_inarr[b_tid2];
+
 
     if(threadIdx.x < 16)
     {
@@ -390,33 +473,29 @@ __global__ void reorderData(uint  startbit,
     uint radix = (sKeys1[threadIdx.x] >> startbit) & 0xF;
     uint globalOffset = sOffsets[radix] + threadIdx.x - sBlockOffsets[radix];
 
-    uint first_id_4 = globalOffset / 4;
-    uint sub_id_4 = globalOffset % 4;
-    uint *key_outarr = (uint *)outKeys[first_id_4].keys;
-    uint *val_outarr = (uint *)outValues[first_id_4].vals;
-    key_outarr[sub_id_4] = sKeys1[threadIdx.x];
-    val_outarr[sub_id_4] = sValues1[threadIdx.x];
+    uint a_tid4 = globalOffset / 4;
+    uint b_tid4 = globalOffset % 4;
+    uint *key_outarr = (uint *)outKeys[a_tid4].keys;
+    uint *val_outarr = (uint *)outValues[a_tid4].vals;
+    key_outarr[b_tid4] = sKeys1[threadIdx.x];
+    val_outarr[b_tid4] = sValues1[threadIdx.x];
 
-//    uint *key_outarr = outKeys[globalOffset].keys;
-//    uint *val_outarr = outValues[globalOffset].vals;
-//    key_outarr[0] = sKeys1[threadIdx.x];
-//    val_outarr[0] = sValues1[threadIdx.x];
+//    outKeys[globalOffset].keys[0]   = sKeys1[threadIdx.x];
+//    outValues[globalOffset].vals[0] = sValues1[threadIdx.x];
 
     radix = (sKeys1[threadIdx.x + GROUP_SIZE] >> startbit) & 0xF;
     globalOffset = sOffsets[radix] + threadIdx.x + GROUP_SIZE -
                    sBlockOffsets[radix];
 
-    first_id_4 = globalOffset / 4;
-    sub_id_4 = globalOffset % 4;
-    key_outarr = (uint *)outKeys[first_id_4].keys;
-    val_outarr = (uint *)outValues[first_id_4].vals;
-    key_outarr[sub_id_4] = sKeys1[threadIdx.x + GROUP_SIZE];
-    val_outarr[sub_id_4] = sValues1[threadIdx.x + GROUP_SIZE];
+    a_tid4 = globalOffset / 4;
+    b_tid4 = globalOffset % 4;
+    key_outarr = (uint *)outKeys[a_tid4].keys;
+    val_outarr = (uint *)outValues[a_tid4].vals;
+    key_outarr[b_tid4] = sKeys1[threadIdx.x + GROUP_SIZE];
+    val_outarr[b_tid4] = sValues1[threadIdx.x + GROUP_SIZE];
+//    outKeys[globalOffset].keys[0]   = sKeys1[threadIdx.x + GROUP_SIZE];
+//    outValues[globalOffset].vals[0] = sValues1[threadIdx.x + GROUP_SIZE];
 
-//    uint *key_outarr2 = outKeys[globalOffset].keys;
-//    uint *val_outarr2 = outValues[globalOffset].vals;
-//    key_outarr2[0] = sKeys1[threadIdx.x + GROUP_SIZE];
-//    val_outarr2[0] = sValues1[threadIdx.x + GROUP_SIZE];
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////

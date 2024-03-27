@@ -104,14 +104,17 @@ void RunBenchmark(ResultDatabase &resultDB, OptionParser &op, ofstream &ofile, s
   } else {
     inputFile >> size;
   }
+  // 2GB
   bytes = size * sizeof(uint);
-  //size = size / ELEM_NUM;
-  size = bytes / ELEM_NUM;
+  size = size / ELEM_NUM;
+  //size = bytes / ELEM_NUM;
 
 //  size = size / ELEM_NUM;
 //  bytes = size * sizeof(val);
 
-  printf("Size: %d items, Bytes: %lld\n", size, bytes);
+  if(!quiet) {
+    printf("Size: %d items, Bytes: %lld\n", size, bytes);
+  }
 
   // If input file given, populate array
   uint *sourceInput = (uint *)malloc(bytes);
@@ -248,14 +251,28 @@ void RunBenchmark(ResultDatabase &resultDB, OptionParser &op, ofstream &ofile, s
         printf("Pass %d: ", it);
     }
 /// <summary>	Initialize host memory to some pattern. </summary>
+//    for (uint i = 0; i < size; i++) {
+////        for (uint j = 0; j < ELEM_NUM; j++) {
+//            //uint temp_val = (i * ELEM_NUM + j) % 1024;
+//            uint temp_val = i % 1024;
+//            hKeys[i/4].keys[i%4] = temp_val;
+//            if (filePath == "") {
+//                temp_val = rand() % 1024;
+//                hVals[i/4].vals[i%4] = rand() % 1024;
+//                //hVals[i].vals[j] = make_uint4(temp_val, temp_val, temp_val, temp_val);
+//            } else {
+//                //hVals[i].vals[j] = sourceInput[i*ELEM_NUM + j];
+//            }
+////        }
+//    }
     for (uint i = 0; i < size; i++) {
-        uint temp_val = i % 1024;
-        hKeys[i / 4].keys[i % 4] = temp_val;
-        if (filePath == "") {
-            temp_val = rand() % 1024;
-            hVals[i / 4].vals[i % 4] = rand() % 1024;
-        } else {
-            //hVals[i].vals[j] = sourceInput[i*ELEM_NUM + j];
+        for (uint j = 0; j < ELEM_NUM; j++) {
+            hKeys[i].keys[j] = (i * ELEM_NUM + j) % 1024;
+            if (filePath == "") {
+                hVals[i].vals[j] = rand() % 1024;
+            } else {
+                //hVals[i].vals[j] = sourceInput[i*ELEM_NUM + j];
+            }
         }
     }
 
@@ -463,7 +480,6 @@ void radixSortStep(uint nbits, uint startbit, key *keys, val *values,
   findRadixOffsets<<<findBlocks, SCAN_BLOCK_SIZE,
                      2 * SCAN_BLOCK_SIZE * sizeof(uint)>>>(
       tempKeys, counters, blockOffsets, startbit, numElements,
-      //(uint2 *)tempKeys, counters, blockOffsets, startbit, numElements,
       findBlocks);
   checkCudaErrors(cudaDeviceSynchronize());
 
@@ -474,9 +490,6 @@ void radixSortStep(uint nbits, uint startbit, key *keys, val *values,
       startbit, keys, values, tempKeys,
       tempValues, blockOffsets, countersSum, counters, reorderBlocks);
   checkCudaErrors(cudaDeviceSynchronize());
-//      startbit, (uint *)keys, (uint *)values, (uint2 *)tempKeys,
-//      (uint2 *)tempValues, blockOffsets, countersSum, counters, reorderBlocks);
-
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////

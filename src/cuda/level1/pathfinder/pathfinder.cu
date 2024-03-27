@@ -143,6 +143,7 @@ void RunBenchmark(ResultDatabase &resultDB, OptionParser &op, ofstream &ofile, s
 void init(OptionParser &op) {
   const bool uvm = op.getOptionBool("uvm");
   const bool copy = op.getOptionBool("copy");
+  const bool dha = op.getOptionBool("dha");
   const bool zero_copy = op.getOptionBool("zero-copy");
   const bool pageable = op.getOptionBool("pageable");
   const bool uvm_advise = op.getOptionBool("uvm-advise");
@@ -156,6 +157,13 @@ void init(OptionParser &op) {
         wall[n] = data + (int)cols * n;
     }
     checkCudaErrors(cudaMallocManaged(&result, sizeof(int) * cols));
+  } else if (dha) {
+    checkCudaErrors(cudaHostAlloc(&data, sizeof(int) * rows * cols, cudaHostAllocDefault));
+    checkCudaErrors(cudaHostAlloc(&wall, sizeof(int *) * rows, cudaHostAllocDefault));
+    for (int n = 0; n < rows; n++)  {
+        wall[n] = data + (int)cols * n;
+    }
+    checkCudaErrors(cudaHostAlloc(&result, sizeof(int) * cols, cudaHostAllocDefault));
   } else if (copy) {
       checkCudaErrors(cudaMallocHost(&data, sizeof(int) * rows * cols));
       checkCudaErrors(cudaMallocHost(&wall, sizeof(int *) * rows));
@@ -401,6 +409,7 @@ void run(int borderCols, int smallBlockCol, int blockCols,
   init(op);
   const bool uvm = op.getOptionBool("uvm");
   const bool copy = op.getOptionBool("copy");
+  const bool dha = op.getOptionBool("dha");
   const bool pageable = op.getOptionBool("pageable");
 
   const bool uvm_advise = op.getOptionBool("uvm-advise");
@@ -424,6 +433,12 @@ void run(int borderCols, int smallBlockCol, int blockCols,
     checkCudaErrors(cudaMalloc((void **)&gpuResult[0], sizeof(int) * cols));
     checkCudaErrors(cudaMalloc((void **)&gpuResult[1], sizeof(int) * cols));
     checkCudaErrors(cudaMalloc((void **)&gpuWall, sizeof(int) * (size - cols)));
+  } else if (dha) {
+    gpuResult[0] = data;
+    checkCudaErrors(cudaHostAlloc(&gpuResult[1], sizeof(int) * cols, cudaHostAllocDefault));
+    checkCudaErrors(cudaHostAlloc(&gpuWall, sizeof(int) * (size - cols), cudaHostAllocDefault));
+    memset(gpuResult[1], 1,  cols * sizeof(int));
+    memset(gpuWall, 1,  (size - cols) * sizeof(int));
   }
   printf("Done allocation\n");
   fflush(stdout);
@@ -483,6 +498,8 @@ void run(int borderCols, int smallBlockCol, int blockCols,
       checkCudaErrors(cudaMemcpy(gpuWall, data + cols,
                   sizeof(int) * (size - cols),
                   cudaMemcpyHostToDevice));
+  } else if (dha) {
+      checkCudaErrors(cudaEventRecord(start, 0));
   }
 
   checkCudaErrors(cudaEventRecord(stop, 0));
@@ -564,15 +581,21 @@ void run(int borderCols, int smallBlockCol, int blockCols,
   ///
   ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-  // cudaFree(gpuWall);
-  cudaFree(gpuResult[0]);
-  cudaFree(gpuResult[1]);
+  if (dha) {
+      // cudaFree(gpuWall);
+      cudaFreeHost(gpuResult[0]);
+      cudaFreeHost(gpuResult[1]);
+  } else {
+      // cudaFree(gpuWall);
+      cudaFree(gpuResult[0]);
+      cudaFree(gpuResult[1]);
+  }
 
-  if (!uvm && !uvm_advise && !uvm_prefetch && !uvm_prefetch_advise && !copy && !zero_copy) {
+  if (!uvm && !uvm_advise && !uvm_prefetch && !uvm_prefetch_advise && !copy && !zero_copy && !dha) {
       delete[] data;
       delete[] wall;
       delete[] result;
-  } else if (copy) {
+  } else if (copy || dha) {
       cudaFreeHost(data);
       cudaFreeHost(wall);
       cudaFreeHost(data);

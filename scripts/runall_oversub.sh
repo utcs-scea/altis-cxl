@@ -31,6 +31,8 @@ benchmarks=('where' 'bfs' 'sort' 'cfd')
 benchmarks=('pathfinder' 'lavamd' 'mandelbrot' 'srad')
 
 benchmarks=('where' 'bfs' 'sort' 'pathfinder' 'lavamd' 'mandelbrot' 'srad' 'cfd' )
+benchmarks=('pathfinder' 'lavamd' 'mandelbrot' 'srad' 'cfd' )
+benchmarks=('where' 'sort' )
 
 pwd="$(dirname $(pwd))"
 mkdir -p $pwd/results
@@ -55,12 +57,13 @@ do
             exit 0
         fi
 
-        dummy_var=$(cat $nvbit_results/$bench.csv | cut -d ',' -f2 | tr -d ' ')
-        dummy_var=$(($dummy_var*32/1024/1024))
+        dummy_var=$(cat $nvbit_results/$bench.csv | cut -d ',' -f1 | tr -d ' ')
+        #dummy_var=$(($dummy_var*32/1024/1024))
+        dummy_var=$(($dummy_var*4/1024))
 
         echo "<<<<<Running $bench with dummy memory allocation $dummy_var>>>>>"
         $pwd/build/bin/$level/$bench -s 4 --passes 1 \
-            --uvm -o $pwd/results/$bench.csv -b $bench --dummy $dummy_var --oversub-frac 1.2
+            --uvm -o $pwd/results/$bench-oversub.csv -b $bench --dummy $dummy_var --oversub-frac 1.2
         sleep 3
     done
 done

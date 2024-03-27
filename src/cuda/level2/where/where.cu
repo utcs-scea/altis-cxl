@@ -28,13 +28,15 @@ cudaEvent_t start, stop;
 /// <summary>	The elapsed time. </summary>
 float elapsedTime;
 
-// 128 Byte structure
-#define ELEM_NUM 16
+// (taeklim): Warp coalescing
+#define WARP_SHIFT 5
+#define WARP_SIZE 32
+
+// 512 Bytes structure
+#define ELEM_NUM 64
+// We only consider 16 elements (128B) from this structure
+#define TARGET_NUM 16
 typedef struct data {
-//    uint64_t num1;
-//    uint64_t num2;
-//    uint64_t num3;
-//    uint64_t num4;
     uint64_t num[ELEM_NUM];
 } data;
 
@@ -67,40 +69,43 @@ __device__ bool check(uint64_t val, int bound) {
 __global__ void markMatches(data *data_arr, int *results, int size, int bound) {
     // Block index
     int bx = blockIdx.x;
-
     // Thread index
     int tx = threadIdx.x;
 
     int tid = (blockDim.x * bx) + tx;
 
-    for( ; tid < size; tid += blockDim.x * gridDim.x) {
-        //if(check(data_arr[tid].num2, bound)) {
-        if(check(data_arr[tid].num[0], bound)) {
-            results[tid] = 1;
-        } else {
-            results[tid] = 0;
+    if (tid < size) {
+        // We only match TARGET_NUMs
+        for (int i = 0; i < TARGET_NUM; i++) {
+            if (check(data_arr[tid].num[i], bound)) {
+                results[tid * TARGET_NUM + i] = 1;
+            } else {
+                results[tid * TARGET_NUM + i] = 0;
+            }
         }
     }
 }
 
-//__global__ void markMatches(int *arr, int *results, int size, int bound) {
-//
-//    // Block index
-//    int bx = blockIdx.x;
-//
-//    // Thread index
-//    int tx = threadIdx.x;
-//
-//    int tid = (blockDim.x * bx) + tx;
-//
-//    for( ; tid < size; tid += blockDim.x * gridDim.x) {
-//        if(check(arr[tid], bound)) {
-//            results[tid] = 1;
-//        } else {
-//            results[tid] = 0;
-//        }
-//    }
-//}
+
+__global__ void markMatchesCoal(data *data_arr, int *results, int size, int bound) {
+    // Block index
+    int bx = blockIdx.x;
+    // Thread index
+    int tx = threadIdx.x;
+    int tid = (blockDim.x * bx) + tx;
+    int warp_id = tid >> WARP_SHIFT;
+    int lane_id = tid & ((1 << WARP_SHIFT) - 1);
+
+    if (warp_id < size) {
+        if (lane_id < TARGET_NUM) {
+            if (check(data_arr[warp_id].num[lane_id], bound)) {
+                results[warp_id * TARGET_NUM + lane_id] = 1;
+            } else {
+                results[warp_id * TARGET_NUM + lane_id] = 0;
+            }
+        }
+    }
+}
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 /// <summary>	Map matches. </summary>
@@ -114,24 +119,41 @@ __global__ void markMatches(data *data_arr, int *results, int size, int bound) {
 /// <param name="size">   	The size. </param>
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-//__global__ void mapMatches(int *arr, int *results, int *prefix, int *final, int size) {
 __global__ void mapMatches(data *data_arr, int *results, int *prefix, int *final, int size) {
-
     // Block index
     int bx = blockIdx.x;
-
     // Thread index
     int tx = threadIdx.x;
-
     int tid = (blockDim.x * bx) + tx;
 
-    for( ; tid < size; tid += blockDim.x * gridDim.x) {
-        if(results[tid]) {
-            //final[prefix[tid]] = data_arr[tid].num2;
-            final[prefix[tid]] = data_arr[tid].num[0];
+    //for( ; tid < size; tid += blockDim.x * gridDim.x) {
+    if (tid < size) {
+        for (int i = 0; i < TARGET_NUM; i++) {
+            if(results[tid * TARGET_NUM + i]) {
+                final[prefix[tid * TARGET_NUM + i]] = data_arr[tid].num[i];
+            }
         }
     }
 }
+
+__global__ void mapMatchesCoal(data *data_arr, int *results, int *prefix, int *final, int size) {
+    // Block index
+    int bx = blockIdx.x;
+    // Thread index
+    int tx = threadIdx.x;
+    int tid = (blockDim.x * bx) + tx;
+    int warp_id = tid >> WARP_SHIFT;
+    int lane_id = tid & ((1 << WARP_SHIFT) - 1);
+
+    if (warp_id < size) {
+        if (lane_id < TARGET_NUM) {
+            if(results[warp_id * TARGET_NUM + lane_id]) {
+                final[prefix[warp_id * TARGET_NUM + lane_id]] = data_arr[warp_id].num[lane_id];
+            }
+        }
+    }
+}
+
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 /// <summary>	Seed array. </summary>
@@ -151,6 +173,7 @@ void seedArr(int *arr, int size) {
 void seedDataArr(data *data_arr, int size) {
     for(int i = 0; i < size; i++) {
         uint64_t rand_num = rand() % 100;
+        //for (int j = 0; j < ELEM_NUM; j++)
         for (int j = 0; j < ELEM_NUM; j++)
             data_arr[i].num[j] = rand_num;
     }
@@ -175,16 +198,22 @@ void where(ResultDatabase &resultDB, OptionParser &op, int size, int coverage, o
     const bool uvm_advise = op.getOptionBool("uvm-advise");
     const bool uvm_prefetch = op.getOptionBool("uvm-prefetch");
     const bool uvm_prefetch_advise = op.getOptionBool("uvm-prefetch-advise");
+    const bool dha = op.getOptionBool("dha");
+    const bool coal = op.getOptionBool("coal");
     string bench_name = op.getOptionString("bench");
     const bool is_barrier = op.getOptionBool("sem");
     int device = 0;
     checkCudaErrors(cudaGetDevice(&device));
+
+    int gpu_num = 2;
 
     data *data_arr;
     if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise || zero_copy) {
         checkCudaErrors(cudaMallocManaged(&data_arr, sizeof(data) * size));
     } else if (copy) {
         checkCudaErrors(cudaMallocHost(&data_arr, sizeof(data) * size));
+    } else if (dha) {
+        checkCudaErrors(cudaHostAlloc(&data_arr, sizeof(data) * size, cudaHostAllocDefault));
     } else if (pageable) {
         data_arr = (data*)malloc(sizeof(data) * size);
         assert(data_arr);
@@ -200,15 +229,19 @@ void where(ResultDatabase &resultDB, OptionParser &op, int size, int coverage, o
     
     if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise || zero_copy) {
         d_data_arr = data_arr;
-        checkCudaErrors(cudaMallocManaged((void**) &d_results, sizeof(int) * size));
-        checkCudaErrors(cudaMallocManaged((void**) &d_prefix, sizeof(int) * size));
+        checkCudaErrors(cudaMallocManaged((void**) &d_results, sizeof(int) * size * TARGET_NUM));
+        checkCudaErrors(cudaMallocManaged((void**) &d_prefix, sizeof(int) * size * TARGET_NUM));
     } else if (copy || pageable) {
         checkCudaErrors(cudaMalloc((void**) &d_data_arr, sizeof(data) * size));
         checkCudaErrors(cudaMalloc((void**) &d_results, sizeof(int) * size));
         checkCudaErrors(cudaMalloc((void**) &d_prefix, sizeof(int) * size));
+    } else if (dha) {
+        d_data_arr = data_arr;
+        checkCudaErrors(cudaHostAlloc(&d_results, sizeof(int) * size, cudaHostAllocDefault));
+        checkCudaErrors(cudaHostAlloc(&d_prefix, sizeof(int) * size, cudaHostAllocDefault));
     }
 
-    if (uvm) {
+    if (uvm || dha) {
         checkCudaErrors(cudaEventRecord(start, 0));
         // do nothing
     } else if (zero_copy) {
@@ -254,23 +287,27 @@ void where(ResultDatabase &resultDB, OptionParser &op, int size, int coverage, o
         }
         printf("[Barrier] Kernel starts\n");
     }
-    dim3 grid(size / 1024 + 1, 1, 1);
+    //dim3 grid(size / 1024 + 1, 1, 1);
+    dim3 grid((size * WARP_SIZE + 1024) / 1024, 1, 1);
     dim3 threads(1024, 1, 1);
     checkCudaErrors(cudaEventRecord(start, 0));
-    markMatches<<<grid, threads>>>(d_data_arr, d_results, size, coverage);
+    if (coal)
+        markMatchesCoal<<<grid, threads>>>(d_data_arr, d_results, size, coverage);
+    else  
+        markMatches<<<grid, threads>>>(d_data_arr, d_results, size, coverage);
     checkCudaErrors(cudaEventRecord(stop, 0));
     checkCudaErrors(cudaEventSynchronize(stop));
     checkCudaErrors(cudaEventElapsedTime(&elapsedTime, start, stop));
     kernelTime += elapsedTime * 1.e-3;
     CHECK_CUDA_ERROR();
 
-//    int temp_size = 0;
-//    for (int i = 0; i < size; i++) {
-//        if (d_results[i] == 1) {
-//            temp_size++;
-//        }
-//    }
-//    printf("temp_size:%d\n", temp_size);
+    int temp_size = 0;
+    for (int i = 0; i < size; i++) {
+        if (d_results[i] == 1) {
+            temp_size++;
+        }
+    }
+    printf("temp_size:%d\n", temp_size);
 
     checkCudaErrors(cudaEventRecord(start, 0));
     thrust::exclusive_scan(thrust::device, d_results, d_results + size, d_prefix);
@@ -305,7 +342,10 @@ void where(ResultDatabase &resultDB, OptionParser &op, int size, int coverage, o
     }
 
     checkCudaErrors(cudaEventRecord(start, 0));
-    mapMatches<<<grid, threads>>>(d_data_arr, d_results, d_prefix, d_final, size);
+    if (coal)
+        mapMatchesCoal<<<grid, threads>>>(d_data_arr, d_results, d_prefix, d_final, size);
+    else 
+        mapMatches<<<grid, threads>>>(d_data_arr, d_results, d_prefix, d_final, size);
     checkCudaErrors(cudaEventRecord(stop, 0));
     checkCudaErrors(cudaEventSynchronize(stop));
     checkCudaErrors(cudaEventElapsedTime(&elapsedTime, start, stop));
@@ -355,6 +395,12 @@ void where(ResultDatabase &resultDB, OptionParser &op, int size, int coverage, o
         checkCudaErrors(cudaFree(d_results));
         checkCudaErrors(cudaFree(d_prefix));
         checkCudaErrors(cudaFree(d_final));
+    } else if (dha) {
+        checkCudaErrors(cudaFreeHost(data_arr));
+        checkCudaErrors(cudaFreeHost(d_results));
+        checkCudaErrors(cudaFreeHost(d_prefix));
+        free(final);
+
     }
     
     char atts[1024];
@@ -400,7 +446,8 @@ void RunBenchmark(ResultDatabase &resultDB, OptionParser &op, ofstream &ofile, s
     int coverage = op.getOptionInt("coverage");
     if (size == 0 || coverage == -1) {
         //int sizes[5] = {1000, 10000, 500000000, 1000000000, 1050000000};
-        int sizes[5] = {1000, 10000, 500000000, 100000000, 1050000000};
+        //int sizes[5] = {1000, 10000, 500000000, 100000000, 1050000000};
+        int sizes[5] = {1000, 10000, 500000000, 25000000, 1050000000};
         int coverages[5] = {20, 30, 40, 80, 240};
         size = sizes[op.getOptionInt("size") - 1];
         coverage = coverages[op.getOptionInt("size") - 1];

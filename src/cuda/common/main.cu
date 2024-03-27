@@ -223,6 +223,8 @@ int main(int argc, char *argv[])
         op.addOption("uvm-prefetch-advise", OPT_BOOL, "0", "prefetch memory the specified destination device with memory guidance on");
         op.addOption("zero-copy", OPT_BOOL, "0", "enable CUDA Unified Virtual Memory with zero-copy");
         op.addOption("emoji", OPT_BOOL, "0", "enable CUDA Unified Virtual Memory with zero-copy");
+        op.addOption("coal", OPT_BOOL, "0", "enable warp coalescing");
+
         op.addOption("coop", OPT_BOOL, "0", "enable CUDA Cooperative Groups");
         op.addOption("dyn", OPT_BOOL, "0", "enable CUDA Dynamic Parallelism");
         op.addOption("graph", OPT_BOOL, "0", "enable CUDA Graphs");
