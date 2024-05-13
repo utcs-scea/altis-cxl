@@ -78,6 +78,7 @@ void runTest(ResultDatabase &resultDB, OptionParser &op, int boxes1d, ofstream &
     bool uvm_prefetch = op.getOptionBool("uvm-prefetch");
     bool copy = op.getOptionBool("copy");
     bool pageable = op.getOptionBool("pageable");
+    bool pud = op.getOptionBool("pud");
     const bool is_barrier = op.getOptionBool("sem");
     // random generator seed set to random value - time in this case
     srand(SEED);
@@ -109,7 +110,7 @@ void runTest(ResultDatabase &resultDB, OptionParser &op, int boxes1d, ofstream &
     dim_cpu.box_mem = dim_cpu.number_boxes * sizeof(box_str);
 
     // allocate boxes
-    if (uvm || uvm_prefetch || zero_copy) {
+    if (uvm || uvm_prefetch || zero_copy || pud) {
         checkCudaErrors(cudaMallocManaged(&box_cpu, dim_cpu.box_mem));
     } else if (copy) {
         checkCudaErrors(cudaMallocHost(&box_cpu, dim_cpu.box_mem));
@@ -176,7 +177,7 @@ void runTest(ResultDatabase &resultDB, OptionParser &op, int boxes1d, ofstream &
     } // home boxes in z direction
 
     // input (distances)
-    if (uvm || uvm_prefetch || zero_copy) {
+    if (uvm || uvm_prefetch || zero_copy || pud) {
         checkCudaErrors(cudaMallocManaged(&rv_cpu, dim_cpu.space_mem));
     } else if (copy) {
         checkCudaErrors(cudaMallocHost(&rv_cpu, dim_cpu.space_mem));
@@ -194,7 +195,7 @@ void runTest(ResultDatabase &resultDB, OptionParser &op, int boxes1d, ofstream &
     }
 
     // input (charge)
-    if (uvm || uvm_prefetch || zero_copy) {
+    if (uvm || uvm_prefetch || zero_copy || pud) {
         checkCudaErrors(cudaMallocManaged(&qv_cpu, dim_cpu.space_mem2));
     } else if (copy) {
         checkCudaErrors(cudaMallocHost(&qv_cpu, dim_cpu.space_mem2));
@@ -209,7 +210,7 @@ void runTest(ResultDatabase &resultDB, OptionParser &op, int boxes1d, ofstream &
     }
 
     // output (forces)
-    if (uvm || uvm_prefetch || zero_copy) {
+    if (uvm || uvm_prefetch || zero_copy || pud) {
         checkCudaErrors(cudaMallocManaged(&fv_cpu, dim_cpu.space_mem));
     } else if (copy) {
         checkCudaErrors(cudaMallocHost(&fv_cpu, dim_cpu.space_mem));
@@ -246,7 +247,7 @@ void runTest(ResultDatabase &resultDB, OptionParser &op, int boxes1d, ofstream &
         fclose(fptr);
     }
 
-    if (uvm || uvm_prefetch || zero_copy) {
+    if (uvm || uvm_prefetch || zero_copy || pud) {
         checkCudaErrors(cudaFree(rv_cpu));
         checkCudaErrors(cudaFree(qv_cpu));
         checkCudaErrors(cudaFree(fv_cpu));

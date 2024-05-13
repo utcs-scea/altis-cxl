@@ -28,53 +28,37 @@ benchmarks=('gups' 'bfs' 'gemm' 'sort' 'pathfinder' 'nw' 'lavamd' 'where' 'parti
 # High amplification
 benchmarks=('cfd' 'pathfinder' 'lavamd' 'mandelbrot' 'srad')
 
-benchmarks=('where' 'bfs' 'sort' 'cfd' 'lavamd' 'mandelbrot' 'srad' 'pathfinder')
-benchmarks=('sort')
-
+benchmarks=('where' 'sort' 'cfd' 'lavamd' 'srad' 'pathfinder')
+benchmarks=('where')
+configs=('uvm' 'zero-copy' 'pud')
 
 pwd="$(dirname $(pwd))"
-mkdir -p $pwd/results
+nvbit_results=$pwd/nvbit-results
+#mkdir -p $pwd/results
 
 for bench in "${benchmarks[@]}"
 do
-    echo 3 | sudo tee /proc/sys/vm/drop_caches
-    sudo dmesg -C
+    for config in "${configs[@]}"
+    do
+        echo 3 | sudo tee /proc/sys/vm/drop_caches
+        sudo dmesg -C
 
-    if [[ ${benchmarks1[@]} =~ $bench ]]; then
-        level=level1
-    elif [[ ${benchmarks2[@]} =~ $bench ]]; then
-        level=level2
-    else 
-        echo "not on listed\n"
-        exit 0
-    fi
+        if [[ ${benchmarks1[@]} =~ $bench ]]; then
+            level=level1
+        elif [[ ${benchmarks2[@]} =~ $bench ]]; then
+            level=level2
+        else 
+            echo "not on listed\n"
+            exit 0
+        fi
 
-#    /usr/local/cuda/bin/nsys profile --force-overwrite=true \
-#    --cuda-um-gpu-page-faults=true --cuda-um-cpu-page-faults=true --cuda-memory-usage=true \
-#        $pwd/build/bin/$level/$bench -s 4 --passes 1 --uvm -o $pwd/results/dummy.csv -b $bench 
-#    echo "<<<<<Finished running $bench with profiling actual memory usage>>>>>"
-#    nsys stats -q --report gpumemsizesum --output @"grep \"Unified Memory memcpy HtoD\"" report1.nsys-rep > dummy.log
-#    dummy_var=`awk -F"," '{print $1}' dummy.log`
-#    dummy_var=$( printf "%.0f" $dummy_var )
-#    rm -rf report1.*
-#    rm -f dummy.log
-#
-#    echo 3 | sudo tee /proc/sys/vm/drop_caches
-#    sudo dmesg -C
-#    sleep 1
+        dummy_var=$(cat $nvbit_results/$bench.csv | cut -d ',' -f1 | tr -d ' ')
+        dummy_var=$(($dummy_var*4/1024))
 
-    ncu --metrics pcie__read_bytes.sum \
-        --log-file $pwd/ncu-results/sort-struct/$bench-struct-read.csv --csv \
-        $pwd/build/bin/$level/$bench -s 4 --passes 1 \
-        --uvm -o $pwd/results/$bench.csv -b $bench 
-        #--uvm -o $pwd/results/$bench.csv -b $bench --dummy $dummy_var --oversub-frac 1.2
-        #--zero-copy -o $pwd/results/$bench.csv -b $bench 
-    sleep 3
-
-    echo 3 | sudo tee /proc/sys/vm/drop_caches
-    sudo dmesg -C
-    ncu --metrics pcie__read_bytes.sum \
-        --log-file $pwd/ncu-results/sort-struct/$bench-struct-zero.csv --csv \
-        $pwd/build/bin/$level/$bench -s 4 --passes 1 \
-        --zero-copy -o $pwd/results/$bench.csv -b $bench 
+        ncu --metrics pcie__read_bytes.sum \
+            --log-file $pwd/ncu-results/pud/$bench-$config-read-pci.csv --csv \
+            $pwd/build/bin/$level/$bench -s 4 --passes 1 --dummy $dummy_var --oversub-frac 1.2\
+            --$config -o $pwd/results/gpuddle-pcie/$bench.csv -b $bench 
+        sleep 3
+    done
 done

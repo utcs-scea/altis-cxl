@@ -546,7 +546,9 @@ void mandelbrot(ResultDatabase &resultDB, OptionParser &op, int size, int MAX_DW
         sem_t *sem) {
 	const bool uvm = op.getOptionBool("uvm");
 	const bool zero_copy = op.getOptionBool("zero-copy");
+	const bool pud = op.getOptionBool("pud");
 	const bool copy = op.getOptionBool("copy");
+	const bool async = op.getOptionBool("async");
 	const bool dha = op.getOptionBool("dha");
 	const bool pageable = op.getOptionBool("pageable");
 	const bool uvm_advise = op.getOptionBool("uvm-advise");
@@ -561,7 +563,7 @@ void mandelbrot(ResultDatabase &resultDB, OptionParser &op, int size, int MAX_DW
 	int w = size, h = size;
 	size_t dwell_sz = w * h * sizeof(int);
 	int *h_dwells, *d_dwells;
-	if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise || zero_copy) {
+	if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise || zero_copy || pud) {
 		checkCudaErrors(cudaMallocManaged((void**)&d_dwells, dwell_sz));
         // (taeklim)
         memset(d_dwells, 1, dwell_sz);
@@ -589,9 +591,15 @@ void mandelbrot(ResultDatabase &resultDB, OptionParser &op, int size, int MAX_DW
         printf("[Barrier] Kernel starts\n");
     }
 
+    if (zero_copy || pud) {
+        checkCudaErrors(cudaEventRecord(start, 0));
+		checkCudaErrors(cudaMemAdvise(d_dwells, dwell_sz, cudaMemAdviseSetAccessedBy, 0));
+    } else {
+        checkCudaErrors(cudaEventRecord(start, 0));
+    }
+
 	// compute the dwells, copy them back
 	dim3 bs(64, 4), grid(divup(w, bs.x), divup(h, bs.y));
-    checkCudaErrors(cudaEventRecord(start, 0));
 	mandelbrot_k<<<grid, bs>>>
 		(d_dwells, w, h, complex(-1.5, -1), complex(0.5, 1), MAX_DWELL);
 	checkCudaErrors(cudaEventRecord(stop, 0));
@@ -602,7 +610,7 @@ void mandelbrot(ResultDatabase &resultDB, OptionParser &op, int size, int MAX_DW
     CHECK_CUDA_ERROR();
 	checkCudaErrors(cudaDeviceSynchronize());
     checkCudaErrors(cudaEventRecord(start, 0));
-	if (uvm) {
+	if (uvm || pud) {
 		h_dwells = d_dwells;
 	} else if (zero_copy) {
 		h_dwells = d_dwells;
@@ -620,7 +628,11 @@ void mandelbrot(ResultDatabase &resultDB, OptionParser &op, int size, int MAX_DW
 		checkCudaErrors(cudaMemAdvise(h_dwells, dwell_sz, cudaMemAdviseSetPreferredLocation, cudaCpuDeviceId));
 		checkCudaErrors(cudaMemPrefetchAsync(h_dwells, dwell_sz, device));
 	} else if (pageable || copy) {
-		checkCudaErrors(cudaMemcpy(h_dwells, d_dwells, dwell_sz, cudaMemcpyDeviceToHost));
+        if (async) {
+            checkCudaErrors(cudaMemcpyAsync(h_dwells, d_dwells, dwell_sz, cudaMemcpyDeviceToHost));
+        } else {
+            checkCudaErrors(cudaMemcpy(h_dwells, d_dwells, dwell_sz, cudaMemcpyDeviceToHost));
+        }
 	}
     checkCudaErrors(cudaEventRecord(stop, 0));
     checkCudaErrors(cudaEventSynchronize(stop));
@@ -628,7 +640,7 @@ void mandelbrot(ResultDatabase &resultDB, OptionParser &op, int size, int MAX_DW
     transferTime += elapsed * 1.e-3;
 
 	// free data
-	if (!uvm && !uvm_prefetch && !uvm_advise && !uvm_prefetch_advise && !copy && !zero_copy && !dha) {
+	if (!uvm && !uvm_prefetch && !uvm_advise && !uvm_prefetch_advise && !copy && !zero_copy && !dha && !pud) {
         checkCudaErrors(cudaFree(d_dwells));
 		free(h_dwells);
 	} else if (copy) {

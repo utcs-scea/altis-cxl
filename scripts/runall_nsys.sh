@@ -21,6 +21,8 @@ benchmarks2=('nw' 'lavamd' 'where' 'particlefilter_naive' 'mandelbrot' 'srad' 'f
 # Running these benches
 benchmarks=('bfs' 'sort' 'pathfinder' 'nw' 'lavamd' 'where' 'particlefilter_naive' 'mandelbrot' 'srad' 'fdtd2d' 'cfd' )
 benchmarks=('gups')
+benchmarks=('particlefilter_naive')
+benchmarks=('fdtd2d' )
 
 total_run=$1
 

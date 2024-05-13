@@ -308,6 +308,7 @@ void fdtdCudaUnifiedMemory(size_t NX, size_t NY, size_t tmax, DATA_TYPE* _fict_,
 {
     const bool uvm = op.getOptionBool("uvm");
     const bool zero_copy = op.getOptionBool("zero-copy");
+    const bool pud = op.getOptionBool("pud");
     const bool uvm_advise = op.getOptionBool("uvm-advise");
     const bool uvm_prefetch = op.getOptionBool("uvm-prefetch");
     const bool uvm_prefetch_advise = op.getOptionBool("uvm-prefetch-advise");
@@ -514,10 +515,10 @@ void RunBenchmark(ResultDatabase &DB, OptionParser &op, ofstream &ofile, sem_t *
             assert(hz);
 
             init_arrays(NX, NY, tmax, _fict_gpu, ex_gpu, ey_gpu, hz_gpu);
-            checkCudaErrors(cudaMemcpy(_fict_, _fict_gpu, tmax*sizeof(DATA_TYPE), cudaMemcpyHostToHost));
-            checkCudaErrors(cudaMemcpy(ex, ex_gpu, NX*(NY+1)*sizeof(DATA_TYPE), cudaMemcpyHostToHost));
-            checkCudaErrors(cudaMemcpy(ey, ey_gpu, (NX+1)*NY*sizeof(DATA_TYPE), cudaMemcpyHostToHost));
-            checkCudaErrors(cudaMemcpy(hz, hz_gpu, NX*NY*sizeof(DATA_TYPE), cudaMemcpyHostToHost));
+//            checkCudaErrors(cudaMemcpy(_fict_, _fict_gpu, tmax*sizeof(DATA_TYPE), cudaMemcpyHostToHost));
+//            checkCudaErrors(cudaMemcpy(ex, ex_gpu, NX*(NY+1)*sizeof(DATA_TYPE), cudaMemcpyHostToHost));
+//            checkCudaErrors(cudaMemcpy(ey, ey_gpu, (NX+1)*NY*sizeof(DATA_TYPE), cudaMemcpyHostToHost));
+//            checkCudaErrors(cudaMemcpy(hz, hz_gpu, NX*NY*sizeof(DATA_TYPE), cudaMemcpyHostToHost));
             
             fdtdCudaUnifiedMemory(NX, NY, tmax, _fict_gpu, ex_gpu, ey_gpu, hz_gpu, DB, op, ofile, sem);
             t_start = rtclock();

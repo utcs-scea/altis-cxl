@@ -21,6 +21,7 @@
 #define STR_SIZE 256
 #define HALO 1  // halo width along one direction when advancing to the next iteration
 #define SEED 7
+//#define HYPERQ 1
 
 void run(int borderCols, int smallBlockCol, int blockCols,
          ResultDatabase &resultDB, OptionParser &op, ofstream &ofile, sem_t *sem);
@@ -52,7 +53,7 @@ void addBenchmarkSpecOptions(OptionParser &op) {
   op.addOption("rows", OPT_INT, "0", "number of rows");
   op.addOption("cols", OPT_INT, "0", "number of cols");
   op.addOption("pyramidHeight", OPT_INT, "0", "pyramid height");
-  op.addOption("instances", OPT_INT, "32", "number of pathfinder instances to run");
+  op.addOption("instances", OPT_INT, "0", "number of pathfinder instances to run");
 }
 
 // ****************************************************************************
@@ -143,6 +144,7 @@ void RunBenchmark(ResultDatabase &resultDB, OptionParser &op, ofstream &ofile, s
 void init(OptionParser &op) {
   const bool uvm = op.getOptionBool("uvm");
   const bool copy = op.getOptionBool("copy");
+  const bool async = op.getOptionBool("async");
   const bool dha = op.getOptionBool("dha");
   const bool zero_copy = op.getOptionBool("zero-copy");
   const bool pageable = op.getOptionBool("pageable");
@@ -179,8 +181,6 @@ void init(OptionParser &op) {
     }
     result = new int[cols];
   }
-  printf("after wall\n");
-  fflush(stdout);
   srand(SEED);
 
   for (int i = 0; i < rows; i++) {
@@ -188,8 +188,6 @@ void init(OptionParser &op) {
       wall[i][j] = rand() % 10;
     }
   }
-  printf("before outputfile\n");
-  fflush(stdout);
 
 //  string outfile = op.getOptionString("outputFile");
 //  if (outfile != "") {
@@ -336,58 +334,59 @@ __global__ void dynproc_kernel(int iteration, int *gpuWall,
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 int calc_path(int *gpuWall, int *gpuResult[2], int rows,
-                    int cols, int pyramid_height,
-                    int blockCols, int borderCols,
-                    double &kernelTime, bool hyperq, int numStreams) {
-  dim3 dimBlock(BLOCK_SIZE);
-  dim3 dimGrid(blockCols);
+        int cols, int pyramid_height,
+        int blockCols, int borderCols,
+        double &kernelTime, bool hyperq, int numStreams) {
+    dim3 dimBlock(BLOCK_SIZE);
+    dim3 dimGrid(blockCols);
 
-  cudaEvent_t start, stop;
-  cudaEventCreate(&start);
-  cudaEventCreate(&stop);
-  float elapsedTime;
+    cudaEvent_t start, stop;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+    float elapsedTime;
 
-  cudaStream_t streams[numStreams];
-  for (int s = 0; s < numStreams; s++) {
-    cudaStreamCreate(&streams[s]);
-  }
-  int src = 1, dst = 0;
-  for (int t = 0; t < rows - 1; t += pyramid_height) {
+    cudaStream_t streams[numStreams];
     for (int s = 0; s < numStreams; s++) {
-      int temp = src;
-      src = dst;
-      dst = temp;
+        cudaStreamCreate(&streams[s]);
+    }
+    int src = 1, dst = 0;
+    int s = 0;
+    for (int t = 0; t < rows - 1; t += pyramid_height) {
+        //for (int s = 0; s < numStreams; s++) {
+            int temp = src;
+            src = dst;
+            dst = temp;
 
-    if(hyperq) {
-      if (t == 0 && s == 0) {
-        cudaEventRecord(start, streams[s]);
-      }
-      dynproc_kernel<<<dimGrid, dimBlock, 0, streams[s]>>>(
-          MIN(pyramid_height, rows - t - 1), gpuWall, gpuResult[src],
-          gpuResult[dst], cols, rows, t, borderCols);
-      if (t + pyramid_height >= rows - 1 && s == numStreams - 1) {
-        cudaDeviceSynchronize();
-        cudaEventRecord(stop, streams[s]);
-        cudaEventSynchronize(stop);
-        CHECK_CUDA_ERROR();
-        cudaEventElapsedTime(&elapsedTime, start, stop);
-        kernelTime += elapsedTime * 1.e-3;
-      }
-    } else {
-      cudaEventRecord(start, 0);
-      dynproc_kernel<<<dimGrid, dimBlock>>>(
-          MIN(pyramid_height, rows - t - 1), gpuWall, gpuResult[src],
-          gpuResult[dst], cols, rows, t, borderCols);
-      cudaDeviceSynchronize();
-      cudaEventRecord(stop, 0);
-      cudaEventSynchronize(stop);
-      CHECK_CUDA_ERROR();
-      cudaEventElapsedTime(&elapsedTime, start, stop);
-      kernelTime += elapsedTime * 1.e-3;
+            if (hyperq) {
+                if (t == 0 && s == 0) {
+                    cudaEventRecord(start, streams[s]);
+                }
+                dynproc_kernel<<<dimGrid, dimBlock, 0, streams[s]>>>(
+                        MIN(pyramid_height, rows - t - 1), gpuWall, gpuResult[src],
+                        gpuResult[dst], cols, rows, t, borderCols);
+                if (t + pyramid_height >= rows - 1 && s == numStreams - 1) {
+                    cudaDeviceSynchronize();
+                    cudaEventRecord(stop, streams[s]);
+                    cudaEventSynchronize(stop);
+                    CHECK_CUDA_ERROR();
+                    cudaEventElapsedTime(&elapsedTime, start, stop);
+                    kernelTime += elapsedTime * 1.e-3;
+                }
+            } else {
+                cudaEventRecord(start, 0);
+                dynproc_kernel<<<dimGrid, dimBlock>>>(
+                        MIN(pyramid_height, rows - t - 1), gpuWall, gpuResult[src],
+                        gpuResult[dst], cols, rows, t, borderCols);
+                cudaDeviceSynchronize();
+                cudaEventRecord(stop, 0);
+                cudaEventSynchronize(stop);
+                CHECK_CUDA_ERROR();
+                cudaEventElapsedTime(&elapsedTime, start, stop);
+                kernelTime += elapsedTime * 1.e-3;
+            }
+        //}
     }
-    }
-  }
-  return dst;
+    return dst;
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -411,6 +410,7 @@ void run(int borderCols, int smallBlockCol, int blockCols,
   const bool copy = op.getOptionBool("copy");
   const bool dha = op.getOptionBool("dha");
   const bool pageable = op.getOptionBool("pageable");
+  const bool async = op.getOptionBool("async");
 
   const bool uvm_advise = op.getOptionBool("uvm-advise");
   const bool uvm_prefetch = op.getOptionBool("uvm-prefetch");
@@ -421,7 +421,12 @@ void run(int borderCols, int smallBlockCol, int blockCols,
 
   int *gpuWall, *gpuResult[2];
   int size = rows * cols;
+  // Cuda events and times
+  cudaEvent_t start, stop;
+  checkCudaErrors(cudaEventCreate(&start));
+  checkCudaErrors(cudaEventCreate(&stop));
 
+  //checkCudaErrors(cudaEventRecord(start, 0));
   if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise || zero_copy) {
     gpuResult[0] = data;
     checkCudaErrors(cudaMallocManaged((void **)&gpuResult[1], sizeof(int) * cols));
@@ -437,16 +442,12 @@ void run(int borderCols, int smallBlockCol, int blockCols,
     gpuResult[0] = data;
     checkCudaErrors(cudaHostAlloc(&gpuResult[1], sizeof(int) * cols, cudaHostAllocDefault));
     checkCudaErrors(cudaHostAlloc(&gpuWall, sizeof(int) * (size - cols), cudaHostAllocDefault));
-    memset(gpuResult[1], 1,  cols * sizeof(int));
-    memset(gpuWall, 1,  (size - cols) * sizeof(int));
+//    memset(gpuResult[1], 1,  cols * sizeof(int));
+//    memset(gpuWall, 1,  (size - cols) * sizeof(int));
   }
   printf("Done allocation\n");
   fflush(stdout);
 
-  // Cuda events and times
-  cudaEvent_t start, stop;
-  checkCudaErrors(cudaEventCreate(&start));
-  checkCudaErrors(cudaEventCreate(&stop));
   float elapsedTime;
   double transferTime = 0.;
   double kernelTime = 0;
@@ -491,13 +492,22 @@ void run(int borderCols, int smallBlockCol, int blockCols,
           }
           printf("[Barrier] Copying starts\n");
       }
-      checkCudaErrors(cudaEventRecord(start, 0));
-      checkCudaErrors(cudaMemcpy(gpuResult[0], data, sizeof(int) * cols,
-                  cudaMemcpyHostToDevice));
-
-      checkCudaErrors(cudaMemcpy(gpuWall, data + cols,
-                  sizeof(int) * (size - cols),
-                  cudaMemcpyHostToDevice));
+      if (async) {
+          printf("Async\n");
+          checkCudaErrors(cudaEventRecord(start, 0));
+          cudaStream_t s1;
+          cudaStream_t s2;
+          checkCudaErrors(cudaStreamCreate(&s1));
+          checkCudaErrors(cudaStreamCreate(&s2));
+          checkCudaErrors(cudaMemcpyAsync(gpuResult[0], data, sizeof(int) * cols, cudaMemcpyHostToDevice, s1));
+          checkCudaErrors(cudaMemcpyAsync(gpuWall, data + cols, sizeof(int) * (size - cols), cudaMemcpyHostToDevice, s2));
+//          checkCudaErrors(cudaStreamDestroy(s1));
+//          checkCudaErrors(cudaStreamDestroy(s2));
+      } else {
+          checkCudaErrors(cudaEventRecord(start, 0));
+          checkCudaErrors(cudaMemcpy(gpuResult[0], data, sizeof(int) * cols, cudaMemcpyHostToDevice));
+          checkCudaErrors(cudaMemcpy(gpuWall, data + cols, sizeof(int) * (size - cols), cudaMemcpyHostToDevice));
+      }
   } else if (dha) {
       checkCudaErrors(cudaEventRecord(start, 0));
   }
@@ -508,6 +518,11 @@ void run(int borderCols, int smallBlockCol, int blockCols,
   transferTime += elapsedTime * 1.e-3;  // convert to seconds
 
   int instances = op.getOptionInt("instances");
+  // (taeklim)
+  printf("instance: %d\n", instances);
+  bool hyperq = false;
+  if (instances > 0) 
+      hyperq = true;
 
   // (taeklim): Waiting for the other apps finishes the initialization
   if (is_barrier && uvm) {
@@ -520,15 +535,17 @@ void run(int borderCols, int smallBlockCol, int blockCols,
       printf("[Barrier] Kernel starts\n");
   }
   printf("before kernel launch\n");
-#ifdef HYPERQ
+//#ifdef HYPERQ
   double hyperqKernelTime = 0;
-  /// <summary>	Calc the path with hyperQ enabled. </summary>
-  int final_ret = calc_path(gpuWall, gpuResult, rows, cols, pyramid_height, blockCols,
-            borderCols, hyperqKernelTime, true, instances);
-#else
-  int final_ret = calc_path(gpuWall, gpuResult, rows, cols, pyramid_height, blockCols,
-                borderCols, kernelTime, false, instances);
-#endif
+  int final_ret;
+  if (hyperq) {
+      hyperqKernelTime = 0;
+      final_ret = calc_path(gpuWall, gpuResult, rows, cols, pyramid_height, blockCols,
+              borderCols, hyperqKernelTime, true, instances);
+  } else {
+      final_ret = calc_path(gpuWall, gpuResult, rows, cols, pyramid_height, blockCols,
+              borderCols, kernelTime, false, instances);
+  }
   printf("Done kernel\n");
 
   checkCudaErrors(cudaEventRecord(start, 0));
@@ -548,10 +565,15 @@ void run(int borderCols, int smallBlockCol, int blockCols,
     checkCudaErrors(cudaMemAdvise(gpuResult[final_ret], sizeof(int) * cols, cudaMemAdviseSetReadMostly, cudaCpuDeviceId));
     checkCudaErrors(cudaMemPrefetchAsync(result, sizeof(int) * cols, cudaCpuDeviceId));
   } else if (copy || pageable) {
-    checkCudaErrors(cudaMemcpy(result, gpuResult[final_ret],
-                    sizeof(int) * cols, cudaMemcpyDeviceToHost));
+      if (async) {
+          checkCudaErrors(cudaMemcpyAsync(result, gpuResult[final_ret],
+                      sizeof(int) * cols, cudaMemcpyDeviceToHost));
+      } else {
+          checkCudaErrors(cudaMemcpy(result, gpuResult[final_ret],
+                      sizeof(int) * cols, cudaMemcpyDeviceToHost));
+      }
   }
-
+  checkCudaErrors(cudaDeviceSynchronize());
   checkCudaErrors(cudaEventRecord(stop, 0));
   checkCudaErrors(cudaEventSynchronize(stop));
   checkCudaErrors(cudaEventElapsedTime(&elapsedTime, start, stop));
@@ -574,13 +596,6 @@ void run(int borderCols, int smallBlockCol, int blockCols,
 //    fs << std::endl;
 //  }
 
-  ////////////////////////////////////////////////////////////////////////////////////////////////////
-  /// <summary>	cleanup. </summary>
-  ///
-  /// <remarks>	Ed, 5/20/2020. </remarks>
-  ///
-  ////////////////////////////////////////////////////////////////////////////////////////////////////
-
   if (dha) {
       // cudaFree(gpuWall);
       cudaFreeHost(gpuResult[0]);
@@ -602,23 +617,23 @@ void run(int borderCols, int smallBlockCol, int blockCols,
   }
 
   string atts = toString(rows) + "x" + toString(cols);
-#ifdef HYPERQ
-  /// <summary>	The result db. add result. </summary>
-  resultDB.AddResult("pathfinder_hyperq_transfer_time", atts, "sec", transferTime);
-  resultDB.AddResult("pathfinder_hyperq_kernel_time", atts, "sec", hyperqKernelTime);
-  resultDB.AddResult("pathfinder_hyperq_total_time", atts, "sec", hyperqKernelTime + transferTime);
-  resultDB.AddResult("pathfinder_hyperq_parity", atts, "N",
-                     transferTime / hyperqKernelTime);
-  resultDB.AddResult("pathfinder_hyperq_speedup", atts, "sec",
-                     kernelTime/hyperqKernelTime);
-#else
-  resultDB.AddResult("pathfinder_transfer_time", atts, "sec", transferTime);
-  resultDB.AddResult("pathfinder_kernel_time", atts, "sec", kernelTime);
-  resultDB.AddResult("pathfinder_total_time", atts, "sec", kernelTime + transferTime);
-  resultDB.AddResult("pathfinder_parity", atts, "N",
-                     transferTime / kernelTime);
-#endif
+  if (hyperq) {
+      /// <summary>	The result db. add result. </summary>
+      resultDB.AddResult("pathfinder_hyperq_transfer_time", atts, "sec", transferTime);
+      resultDB.AddResult("pathfinder_hyperq_kernel_time", atts, "sec", hyperqKernelTime);
+      resultDB.AddResult("pathfinder_hyperq_total_time", atts, "sec", hyperqKernelTime + transferTime);
+      resultDB.AddResult("pathfinder_hyperq_parity", atts, "N",
+              transferTime / hyperqKernelTime);
+      ofile << bench_name << ", " << hyperqKernelTime + transferTime << ", " << endl;
+      //  resultDB.AddResult("pathfinder_hyperq_speedup", atts, "sec",
+      //                     kernelTime/hyperqKernelTime);
+  } else {
+      resultDB.AddResult("pathfinder_transfer_time", atts, "sec", transferTime);
+      resultDB.AddResult("pathfinder_kernel_time", atts, "sec", kernelTime);
+      resultDB.AddResult("pathfinder_total_time", atts, "sec", kernelTime + transferTime);
+      resultDB.AddResult("pathfinder_parity", atts, "N",
+              transferTime / kernelTime);
+      ofile << bench_name << ", " << kernelTime + transferTime << ", " << endl;
+  }
   resultDB.AddOverall("Time", "sec", kernelTime+transferTime);
-  
-  ofile << bench_name << ", " << kernelTime + transferTime << ", " << endl;
 }

@@ -14,19 +14,24 @@ elif [[ $# -ne 1 ]]; then
     exit 0
 fi 
 
-
 benchmarks1=('gups' 'bfs' 'sort' 'pathfinder' 'gemm')
 benchmarks2=('nw' 'lavamd' 'where' 'particlefilter_naive' 'mandelbrot' 'srad' 'fdtd2d' 'cfd' )
-
 # Running these benches
 benchmarks=('gups' 'gemm' 'bfs' 'sort' 'pathfinder' 'nw' 'lavamd' 'where' 'particlefilter_naive' 'mandelbrot' 'srad' 'fdtd2d' 'cfd' )
-
-benchmarks=('gemm' 'nw' 'lavamd' 'where' 'particlefilter_naive' 'mandelbrot' 'srad' 'fdtd2d' 'cfd')
 benchmarks=('where' 'bfs' 'sort' 'pathfinder' 'lavamd' 'mandelbrot' 'srad' 'cfd' )
 benchmarks=('mandelbrot' 'lavamd' 'pathfinder' 'cfd' 'srad' 'sort' 'where')
-benchmarks=('where')
-configs=('zero-copy')
 
+benchmarks=('where' 'pathfinder')
+benchmarks=('fdtd2d' 'particlefilter_naive')
+configs=('zero-copy')
+configs=('pageable' 'copy')
+configs=('pageable' 'copy' 'uvm' 'uvm-prefetch' 'zero-copy')
+configs=('pageable' 'copy' 'uvm' 'zero-copy')
+
+configs=('pageable' 'uvm' 'zero-copy')
+configs=('zero-copy')
+benchmarks=('mandelbrot' 'lavamd' 'pathfinder' 'cfd' 'srad' 'sort' 'where')
+configs=('uvm')
 total_run=$1
 
 pwd="$(dirname $(pwd))"
@@ -39,7 +44,7 @@ do
         for i in $(seq 1 $total_run)
         do
             echo 3 | sudo tee /proc/sys/vm/drop_caches
-            sudo dmesg -C
+            #sudo dmesg -C
 
             if [[ ${benchmarks1[@]} =~ $bench ]]; then
                 level=level1
@@ -49,11 +54,8 @@ do
                 echo "not on listed\n"
                 exit 0
             fi
-            #numactl --membind=0 --cpunodebind=0 \
-#            /usr/local/cuda/bin/nsys profile --force-overwrite=true \
-#                --cuda-um-gpu-page-faults=true --cuda-um-cpu-page-faults=true --cuda-memory-usage=true \
-            $pwd/build/bin/$level/$bench -s 4 --passes 1 --$config -b $bench  --coal
-            #$pwd/build/bin/$level/$bench -s 4 --passes 1 --$config -o $pwd/results/$bench-$config.csv -b $bench 
+#            numactl --membind=1 --cpunodebind=1 \
+            $pwd/build/bin/$level/$bench -s 4 --passes 1 --$config -o $pwd/results/gpuddle/$bench-$config.csv -b $bench
             echo "Done with $bench ${i} times..."
             sleep 3
         done

@@ -135,6 +135,7 @@ void RunBenchmark(ResultDatabase &resultDB, OptionParser &op, ofstream &ofile, s
   bool quiet = op.getOptionBool("quiet");
   const bool uvm = op.getOptionBool("uvm");
   const bool zero_copy = op.getOptionBool("zero-copy");
+  const bool pud = op.getOptionBool("pud");
   const bool copy = op.getOptionBool("copy");
   const bool pageable = op.getOptionBool("pageable");
   const bool uvm_advise = op.getOptionBool("uvm-advice");
@@ -172,7 +173,7 @@ void RunBenchmark(ResultDatabase &resultDB, OptionParser &op, ofstream &ofile, s
   int passes = op.getOptionInt("passes");
   for (int i = 0; i < passes; i++) {
     float *matrix = NULL;
-    if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise || zero_copy) {
+    if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise || zero_copy || pud) {
         checkCudaErrors(cudaMallocManaged(&matrix, imageSize * imageSize * sizeof(float)));
     } else if (copy) {
         checkCudaErrors(cudaMallocHost(&matrix, imageSize * imageSize * sizeof(float)));
@@ -185,6 +186,14 @@ void RunBenchmark(ResultDatabase &resultDB, OptionParser &op, ofstream &ofile, s
     if (!quiet) {
         printf("Pass %d:\n", i);
     }
+    // (taeklim)
+    if (uvm) {
+    } else if (zero_copy) {
+        checkCudaErrors(cudaMemAdvise(matrix, sizeof(float) * imageSize * imageSize, cudaMemAdviseSetAccessedBy, 0));
+    } else if (pud) {
+        checkCudaErrors(cudaMemAdvise(matrix, sizeof(float) * imageSize * imageSize, cudaMemAdviseSetAccessedBy, 0));
+    }
+
     float time = srad(resultDB, op, matrix, imageSize, speckleSize, iters, ofile, sem);
     if (!quiet) {
         printf("Running SRAD...Done.\n");
@@ -205,7 +214,7 @@ void RunBenchmark(ResultDatabase &resultDB, OptionParser &op, ofstream &ofile, s
             resultDB.AddResult("srad_gridsync_speedup", atts, "N", time/time_gridsync);
         }
     }
-    if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise || zero_copy) {
+    if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise || zero_copy || pud) {
         checkCudaErrors(cudaFree(matrix));
     } else if (copy) {
         checkCudaErrors(cudaFreeHost(matrix));
@@ -240,6 +249,7 @@ float srad(ResultDatabase &resultDB, OptionParser &op, float* matrix, int imageS
     const bool coop = op.getOptionBool("coop");
     const bool copy = op.getOptionBool("copy");
     const bool pageable = op.getOptionBool("pageable");
+    const bool pud = op.getOptionBool("pud");
     const bool is_barrier = op.getOptionBool("sem");
     string bench_name = op.getOptionString("bench");
     int device = 0;
@@ -273,7 +283,7 @@ float srad(ResultDatabase &resultDB, OptionParser &op, float* matrix, int imageS
     size_I = cols * rows;
     size_R = (r2 - r1 + 1) * (c2 - c1 + 1);
 
-    if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise || zero_copy) {
+    if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise || zero_copy || pud) {
         checkCudaErrors(cudaMallocManaged(&J, sizeof(float) * size_I));
         checkCudaErrors(cudaMallocManaged(&c, sizeof(float) * size_I));
     } else if (copy) {
@@ -290,13 +300,17 @@ float srad(ResultDatabase &resultDB, OptionParser &op, float* matrix, int imageS
     }
 
     // Allocate device memory
-    if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise || zero_copy) {
+    if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise || zero_copy || pud) {
         J_cuda = J;
         C_cuda = c;
         checkCudaErrors(cudaMallocManaged((void **)&E_C, sizeof(float) * size_I));
+        printf("E_C:%ld\n", E_C);
         checkCudaErrors(cudaMallocManaged((void **)&W_C, sizeof(float) * size_I));
+        printf("W_C:%ld\n", W_C);
         checkCudaErrors(cudaMallocManaged((void **)&S_C, sizeof(float) * size_I));
+        printf("S_C:%ld\n", S_C);
         checkCudaErrors(cudaMallocManaged((void **)&N_C, sizeof(float) * size_I));
+        printf("N_C:%ld\n", N_C);
     } else if (copy || pageable) {
         checkCudaErrors(cudaMalloc((void **)&J_cuda, sizeof(float) * size_I));
         checkCudaErrors(cudaMalloc((void **)&C_cuda, sizeof(float) * size_I));
@@ -307,7 +321,7 @@ float srad(ResultDatabase &resultDB, OptionParser &op, float* matrix, int imageS
     }
 
     // copy random matrix
-    if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise || copy || zero_copy) {
+    if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise || copy || zero_copy || pud) {
         I = matrix;
     } else if (pageable) {
         memcpy(I, matrix, rows*cols*sizeof(float));
@@ -345,6 +359,17 @@ float srad(ResultDatabase &resultDB, OptionParser &op, float* matrix, int imageS
             // do nothing
         } else if (zero_copy) {
             checkCudaErrors(cudaMemAdvise(J_cuda, sizeof(float) * size_I, cudaMemAdviseSetAccessedBy, 0));
+            checkCudaErrors(cudaMemAdvise(C_cuda, sizeof(float) * size_I, cudaMemAdviseSetAccessedBy, 0));
+
+            checkCudaErrors(cudaMemAdvise(E_C, sizeof(float) * size_I, cudaMemAdviseSetAccessedBy, 0));
+            checkCudaErrors(cudaMemAdvise(W_C, sizeof(float) * size_I, cudaMemAdviseSetAccessedBy, 0));
+            checkCudaErrors(cudaMemAdvise(S_C, sizeof(float) * size_I, cudaMemAdviseSetAccessedBy, 0));
+            checkCudaErrors(cudaMemAdvise(N_C, sizeof(float) * size_I, cudaMemAdviseSetAccessedBy, 0));
+        } else if (pud) {
+//            checkCudaErrors(cudaMemAdvise(E_C, sizeof(float) * size_I, cudaMemAdviseSetAccessedBy, 0));
+//            checkCudaErrors(cudaMemAdvise(W_C, sizeof(float) * size_I, cudaMemAdviseSetAccessedBy, 0));
+//            checkCudaErrors(cudaMemAdvise(S_C, sizeof(float) * size_I, cudaMemAdviseSetAccessedBy, 0));
+//            checkCudaErrors(cudaMemAdvise(N_C, sizeof(float) * size_I, cudaMemAdviseSetAccessedBy, 0));
         } else if (uvm_advise) {
             checkCudaErrors(cudaMemAdvise(J_cuda, sizeof(float) * size_I, cudaMemAdviseSetPreferredLocation, device));
         } else if (uvm_prefetch) {

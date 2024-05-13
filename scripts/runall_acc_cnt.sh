@@ -33,11 +33,9 @@ benchmarks=('where' 'bfs' 'sort' 'cfd')
 # Low amplification
 benchmarks=('pathfinder' 'lavamd' 'mandelbrot' 'srad')
 
-benchmarks=('where' 'bfs' 'sort' 'cfd' 'pathfinder' 'lavamd' 'mandelbrot' 'srad')
-benchmarks=('where' 'sort')
-benchmarks=('particlefilter_naive' 'fdtd2d')
-
-benchmarks=('where' 'sort' 'cfd' 'lavamd' 'srad')
+benchmarks=('where' 'sort' 'pathfinder' 'lavamd' 'mandelbrot' 'srad' 'cfd')
+benchmarks=('srad')
+# Low amplification
 
 for bench in "${benchmarks[@]}"
 do
@@ -54,30 +52,16 @@ do
         echo "not on listed\n"
         exit 0
     fi
-#    /usr/local/cuda/bin/nsys profile --force-overwrite=true \
-#        --cuda-um-gpu-page-faults=true --cuda-um-cpu-page-faults=true --cuda-memory-usage=true \
-#        $pwd/build/bin/$level/$bench -s 4 --passes 1 --uvm -o $pwd/results/dummy.csv -b $bench 
-#    echo "<<<<<Finished running $bench with profiling actual memory usage>>>>>"
-#    nsys stats -q --report gpumemsizesum --output @"grep \"Unified Memory memcpy HtoD\"" report1.nsys-rep > dummy.log
-#    dummy_var=`awk -F"," '{print $1}' dummy.log`
-#    dummy_var=$( printf "%.0f" $dummy_var )
-#    rm -rf report1.*
-#    rm -f dummy.log
-
     echo "<<<<< Running $bench without nvbit mem_trace >>>>>"
     LD_PRELOAD=$NVBIT_PATH/mem_trace/mem_trace.so $pwd/build/bin/$level/$bench -s 4 --passes 1 \
-        --uvm -o $pwd/results/$bench.csv -b $bench
-    mv $pwd/output.csv $pwd/nvbit-results/usage/$bench.csv
+        --uvm -b $bench
+    mv /home/tkim/workspace/page_accesses.csv $pwd/nvbit-results/access/$bench-access2.csv
+    mv /home/tkim/workspace/alloc_addr.csv $pwd/nvbit-results/access/$bench-access-addr2.csv
+#    mv /home/tkim/workspace/page_accesses.csv $pwd/nvbit-results/access/$bench-ord-ro2.csv
+#    mv /home/tkim/workspace/alloc_addr.csv $pwd/nvbit-results/access/$bench-alloc-addr2.csv
+
+#    rm /home/tkim/workspace/alloc_addr.csv -f
 #    sudo mv /disk/tkim/mem_trace/output.csv /disk/tkim/mem_trace/$bench\_trace.log
+#    sudo dmesg > /disk/tkim/mem_trace/$bench\_dmesg.log
     echo "<<<<< Done nvbit mem_trace >>>>>"
-
-#    echo "<<<<< Begin filtering mem_trace in background >>>>>"
-#    sudo $pwd/scripts/filter-trace -f /disk/tkim/mem_trace/$bench &
-#    sleep 2
-
-#
-#    echo "<<<<<Running $bench with dummy memory allocation $dummy_var>>>>>"
-#    $pwd/build/bin/$level/$bench -s 4 --passes 1 \
-#        --uvm -o $pwd/results/$bench.csv -b $bench --dummy $dummy_var --oversub-frac 1.2
-#    sleep 3
 done

@@ -212,6 +212,7 @@ int main(int argc, char *argv[])
         // Add options for turn on/off CUDA features
         // (taeklim)
         op.addOption("pageable", OPT_BOOL, "0", "enable pageable memory allocation (cudaMalloc)");
+        op.addOption("async", OPT_BOOL, "0", "enable asynchronous copy (cudaMemcpyAsync)");
         op.addOption("copy", OPT_BOOL, "0", "enable pinned memory allocation (cudaMallocHost)");
         op.addOption("dha", OPT_BOOL, "0", "enable direct-host-access (cudaMallocHost w/o cudaMemcpy)");
         op.addOption("uvm", OPT_BOOL, "0", "enable CUDA Unified Virtual Memory, only demand paging");
@@ -222,6 +223,7 @@ int main(int argc, char *argv[])
         op.addOption("uvm-prefetch", OPT_BOOL, "0", "prefetch memory the specified destination device");
         op.addOption("uvm-prefetch-advise", OPT_BOOL, "0", "prefetch memory the specified destination device with memory guidance on");
         op.addOption("zero-copy", OPT_BOOL, "0", "enable CUDA Unified Virtual Memory with zero-copy");
+        op.addOption("pud", OPT_BOOL, "0", "enable Gpuddle");
         op.addOption("emoji", OPT_BOOL, "0", "enable CUDA Unified Virtual Memory with zero-copy");
         op.addOption("coal", OPT_BOOL, "0", "enable warp coalescing");
 
@@ -231,6 +233,7 @@ int main(int argc, char *argv[])
         // (taeklim)
         op.addOption("sem", OPT_BOOL, "0", "enable barrier to sync multiple processes");
         op.addOption("bench", OPT_STRING, "", "Benchmark name", 'b');
+        op.addOption("hyperq", OPT_BOOL, "0", "enable hyperq");
 
         addBenchmarkSpecOptions(op);
 
@@ -292,11 +295,16 @@ int main(int argc, char *argv[])
         // (taeklim): Add dummy memory for memroy limitation
         uint64_t app_mem_size_mb = op.getOptionInt("dummy");
         if (app_mem_size_mb > 0) {
-            uint64_t dummy_size_mb = MAX_MEM_SIZE - app_mem_size_mb;
-            //uint64_t oversub_mb = op.getOptionFloat("oversub-frac") * app_mem_size_mb - app_mem_size_mb;
+            cudaDeviceProp deviceProp;
+            cudaGetDeviceProperties(&deviceProp, 0);
+            uint64_t max_mem_size = deviceProp.totalGlobalMem / 1024 / 1024;
+            printf("max_mem_size:%ld\n", max_mem_size);
+            //uint64_t dummy_size_mb = MAX_MEM_SIZE - app_mem_size_mb;
+            uint64_t dummy_size_mb = max_mem_size - app_mem_size_mb;
+
             uint64_t oversub_mb = app_mem_size_mb / op.getOptionFloat("oversub-frac");
-            //dummy_size_mb = (dummy_size_mb + oversub_mb) * BYTE_PER_MB;
-            dummy_size_mb = (MAX_MEM_SIZE - oversub_mb) * BYTE_PER_MB;
+            //dummy_size_mb = (MAX_MEM_SIZE - oversub_mb) * BYTE_PER_MB;
+            dummy_size_mb = (max_mem_size - oversub_mb) * BYTE_PER_MB;
 
             size_t *dummy_h, *dummy;
             dummy_h = (size_t*)malloc(dummy_size_mb);

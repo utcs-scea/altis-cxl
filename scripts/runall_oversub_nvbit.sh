@@ -39,9 +39,10 @@ benchmarks=('particlefilter_naive' 'fdtd2d')
 
 benchmarks=('where' 'sort' 'cfd' 'lavamd' 'srad')
 
+nvbit_results=$pwd/nvbit-results
+
 for bench in "${benchmarks[@]}"
 do
-    echo 3 | sudo tee /proc/sys/vm/drop_caches
     sudo dmesg -C
     rm -rf report1.*
     rm -f dummy.log
@@ -54,30 +55,14 @@ do
         echo "not on listed\n"
         exit 0
     fi
-#    /usr/local/cuda/bin/nsys profile --force-overwrite=true \
-#        --cuda-um-gpu-page-faults=true --cuda-um-cpu-page-faults=true --cuda-memory-usage=true \
-#        $pwd/build/bin/$level/$bench -s 4 --passes 1 --uvm -o $pwd/results/dummy.csv -b $bench 
-#    echo "<<<<<Finished running $bench with profiling actual memory usage>>>>>"
-#    nsys stats -q --report gpumemsizesum --output @"grep \"Unified Memory memcpy HtoD\"" report1.nsys-rep > dummy.log
-#    dummy_var=`awk -F"," '{print $1}' dummy.log`
-#    dummy_var=$( printf "%.0f" $dummy_var )
-#    rm -rf report1.*
-#    rm -f dummy.log
+
+    dummy_var=$(cat $nvbit_results/$bench.csv | cut -d ',' -f1 | tr -d ' ')
+    dummy_var=$(($dummy_var*4/1024))
 
     echo "<<<<< Running $bench without nvbit mem_trace >>>>>"
     LD_PRELOAD=$NVBIT_PATH/mem_trace/mem_trace.so $pwd/build/bin/$level/$bench -s 4 --passes 1 \
-        --uvm -o $pwd/results/$bench.csv -b $bench
-    mv $pwd/output.csv $pwd/nvbit-results/usage/$bench.csv
-#    sudo mv /disk/tkim/mem_trace/output.csv /disk/tkim/mem_trace/$bench\_trace.log
+        --uvm -o $pwd/results/$bench.csv -b $bench --dummy $dummy_var --oversub-frac 1.2
+    mv $pwd/output.csv $pwd/nvbit-results/$bench-oversub.csv
     echo "<<<<< Done nvbit mem_trace >>>>>"
 
-#    echo "<<<<< Begin filtering mem_trace in background >>>>>"
-#    sudo $pwd/scripts/filter-trace -f /disk/tkim/mem_trace/$bench &
-#    sleep 2
-
-#
-#    echo "<<<<<Running $bench with dummy memory allocation $dummy_var>>>>>"
-#    $pwd/build/bin/$level/$bench -s 4 --passes 1 \
-#        --uvm -o $pwd/results/$bench.csv -b $bench --dummy $dummy_var --oversub-frac 1.2
-#    sleep 3
 done

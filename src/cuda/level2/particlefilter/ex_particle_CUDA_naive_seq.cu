@@ -472,6 +472,7 @@ void getneighbors(int * se, int numOnes, double * neighbors, int radius){
 
 void videoSequence(OptionParser &op, int * I, int IszX, int IszY, int Nfr, int * seed) {
 	const bool uvm = op.getOptionBool("uvm");
+	const bool zero_copy = op.getOptionBool("zero-copy");
     const bool uvm_advise = op.getOptionBool("uvm-advise");
     const bool uvm_prefetch = op.getOptionBool("uvm-prefetch");
     const bool uvm_prefetch_advise = op.getOptionBool("uvm-prefetch-advise");
@@ -498,7 +499,7 @@ void videoSequence(OptionParser &op, int * I, int IszX, int IszY, int Nfr, int *
 	
 	/*dilate matrix*/
 	int *newMatrix = NULL;
-	if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise) {
+	if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise || zero_copy) {
 		checkCudaErrors(cudaMallocManaged(&newMatrix, sizeof(int) * IszX * IszY * Nfr));
 	}
 	else {
@@ -514,7 +515,7 @@ void videoSequence(OptionParser &op, int * I, int IszX, int IszY, int Nfr, int *
 			}
 		}
 	}
-	if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise) {
+	if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise || zero_copy) {
 		checkCudaErrors(cudaFree(newMatrix));
 	}
 	else {
@@ -1125,7 +1126,8 @@ void RunBenchmark(ResultDatabase &resultDB, OptionParser &op, ofstream &ofile, s
         int probSizes[4][4] = {{10, 10, 2, 100},
                                {40, 40, 5, 500},
                                {200, 200, 8, 500000},
-                               {500, 500, 15, 1000000}};
+                                 {500, 500, 15, 1000000}};
+                               //{1000, 1000, 30, 2000000}};
         int size = op.getOptionInt("size") - 1;
         for(int i = 0; i < 4; i++) {
             args[i] = probSizes[size][i];
@@ -1198,6 +1200,7 @@ void particlefilter_naive(ResultDatabase &resultDB, OptionParser &op, int args[]
 	}
 	//call video sequence
 	videoSequence(op, I, IszX, IszY, Nfr, seed);
+    printf("Done videoSequence\n");
 	//call particle filter
 	particleFilter(I, IszX, IszY, Nfr, seed, Nparticles, op, resultDB, ofile, sem);
 	

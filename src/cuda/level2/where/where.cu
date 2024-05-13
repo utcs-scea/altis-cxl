@@ -35,7 +35,7 @@ float elapsedTime;
 // 512 Bytes structure
 #define ELEM_NUM 64
 // We only consider 16 elements (128B) from this structure
-#define TARGET_NUM 16
+#define TARGET_NUM 4
 typedef struct data {
     uint64_t num[ELEM_NUM];
 } data;
@@ -71,9 +71,7 @@ __global__ void markMatches(data *data_arr, int *results, int size, int bound) {
     int bx = blockIdx.x;
     // Thread index
     int tx = threadIdx.x;
-
     int tid = (blockDim.x * bx) + tx;
-
     if (tid < size) {
         // We only match TARGET_NUMs
         for (int i = 0; i < TARGET_NUM; i++) {
@@ -85,7 +83,6 @@ __global__ void markMatches(data *data_arr, int *results, int size, int bound) {
         }
     }
 }
-
 
 __global__ void markMatchesCoal(data *data_arr, int *results, int size, int bound) {
     // Block index
@@ -173,7 +170,6 @@ void seedArr(int *arr, int size) {
 void seedDataArr(data *data_arr, int size) {
     for(int i = 0; i < size; i++) {
         uint64_t rand_num = rand() % 100;
-        //for (int j = 0; j < ELEM_NUM; j++)
         for (int j = 0; j < ELEM_NUM; j++)
             data_arr[i].num[j] = rand_num;
     }
@@ -195,20 +191,20 @@ void where(ResultDatabase &resultDB, OptionParser &op, int size, int coverage, o
     const bool zero_copy = op.getOptionBool("zero-copy");
     const bool copy = op.getOptionBool("copy");
     const bool pageable = op.getOptionBool("pageable");
+    const bool async = op.getOptionBool("async");
     const bool uvm_advise = op.getOptionBool("uvm-advise");
     const bool uvm_prefetch = op.getOptionBool("uvm-prefetch");
     const bool uvm_prefetch_advise = op.getOptionBool("uvm-prefetch-advise");
     const bool dha = op.getOptionBool("dha");
     const bool coal = op.getOptionBool("coal");
+    const bool pud = op.getOptionBool("pud");
     string bench_name = op.getOptionString("bench");
     const bool is_barrier = op.getOptionBool("sem");
     int device = 0;
     checkCudaErrors(cudaGetDevice(&device));
 
-    int gpu_num = 2;
-
     data *data_arr;
-    if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise || zero_copy) {
+    if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise || zero_copy || pud) {
         checkCudaErrors(cudaMallocManaged(&data_arr, sizeof(data) * size));
     } else if (copy) {
         checkCudaErrors(cudaMallocHost(&data_arr, sizeof(data) * size));
@@ -227,23 +223,26 @@ void where(ResultDatabase &resultDB, OptionParser &op, int size, int coverage, o
     int *d_final;
     data *d_data_arr;
     
-    if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise || zero_copy) {
+    if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise || zero_copy || pud) {
         d_data_arr = data_arr;
         checkCudaErrors(cudaMallocManaged((void**) &d_results, sizeof(int) * size * TARGET_NUM));
         checkCudaErrors(cudaMallocManaged((void**) &d_prefix, sizeof(int) * size * TARGET_NUM));
     } else if (copy || pageable) {
         checkCudaErrors(cudaMalloc((void**) &d_data_arr, sizeof(data) * size));
-        checkCudaErrors(cudaMalloc((void**) &d_results, sizeof(int) * size));
-        checkCudaErrors(cudaMalloc((void**) &d_prefix, sizeof(int) * size));
+        checkCudaErrors(cudaMalloc((void**) &d_results, sizeof(int) * size * TARGET_NUM));
+        checkCudaErrors(cudaMalloc((void**) &d_prefix, sizeof(int) * size * TARGET_NUM));
     } else if (dha) {
         d_data_arr = data_arr;
-        checkCudaErrors(cudaHostAlloc(&d_results, sizeof(int) * size, cudaHostAllocDefault));
-        checkCudaErrors(cudaHostAlloc(&d_prefix, sizeof(int) * size, cudaHostAllocDefault));
+        checkCudaErrors(cudaHostAlloc(&d_results, sizeof(int) * size * TARGET_NUM, cudaHostAllocDefault));
+        checkCudaErrors(cudaHostAlloc(&d_prefix, sizeof(int) * size * TARGET_NUM, cudaHostAllocDefault));
     }
 
     if (uvm || dha) {
         checkCudaErrors(cudaEventRecord(start, 0));
         // do nothing
+    } else if (pud) {
+        checkCudaErrors(cudaEventRecord(start, 0));
+        checkCudaErrors(cudaMemAdvise(d_data_arr, sizeof(data) * size, cudaMemAdviseSetAccessedBy, 0));
     } else if (zero_copy) {
         checkCudaErrors(cudaEventRecord(start, 0));
         checkCudaErrors(cudaMemAdvise(d_data_arr, sizeof(data) * size, cudaMemAdviseSetAccessedBy, 0));
@@ -270,7 +269,16 @@ void where(ResultDatabase &resultDB, OptionParser &op, int size, int coverage, o
             printf("[Barrier] Copying starts\n");
         }
         checkCudaErrors(cudaEventRecord(start, 0));
-        checkCudaErrors(cudaMemcpy(d_data_arr, data_arr, sizeof(int) * size, cudaMemcpyHostToDevice));
+        if (async) {
+            cudaStream_t s1;
+            checkCudaErrors(cudaStreamCreate(&s1));
+            checkCudaErrors(cudaMemcpyAsync(d_data_arr, data_arr, sizeof(data) * size, cudaMemcpyHostToDevice, s1));
+            checkCudaErrors(cudaStreamDestroy(s1));
+        } else {
+            checkCudaErrors(cudaMemcpy(d_data_arr, data_arr, sizeof(data) * size, cudaMemcpyHostToDevice));
+        }
+        printf("Done copying\n");
+        fflush(stdout);
     }
     checkCudaErrors(cudaEventRecord(stop, 0));
     checkCudaErrors(cudaEventSynchronize(stop));
@@ -287,12 +295,12 @@ void where(ResultDatabase &resultDB, OptionParser &op, int size, int coverage, o
         }
         printf("[Barrier] Kernel starts\n");
     }
-    //dim3 grid(size / 1024 + 1, 1, 1);
-    dim3 grid((size * WARP_SIZE + 1024) / 1024, 1, 1);
+    dim3 grid(size/1024+1, 1, 1);
+    dim3 grid_coal((size*WARP_SIZE)/1024 + 1, 1, 1);
     dim3 threads(1024, 1, 1);
     checkCudaErrors(cudaEventRecord(start, 0));
     if (coal)
-        markMatchesCoal<<<grid, threads>>>(d_data_arr, d_results, size, coverage);
+        markMatchesCoal<<<grid_coal, threads>>>(d_data_arr, d_results, size, coverage);
     else  
         markMatches<<<grid, threads>>>(d_data_arr, d_results, size, coverage);
     checkCudaErrors(cudaEventRecord(stop, 0));
@@ -301,16 +309,17 @@ void where(ResultDatabase &resultDB, OptionParser &op, int size, int coverage, o
     kernelTime += elapsedTime * 1.e-3;
     CHECK_CUDA_ERROR();
 
-    int temp_size = 0;
-    for (int i = 0; i < size; i++) {
-        if (d_results[i] == 1) {
-            temp_size++;
-        }
-    }
-    printf("temp_size:%d\n", temp_size);
+//    int temp_size = 0;
+//    for (int i = 0; i < size * TARGET_NUM; i++) {
+//        if (d_results[i] == 1) {
+//            temp_size++;
+//        }
+//    }
+//    printf("temp_size:%d\n", temp_size);
+//    fflush(stdout);
 
     checkCudaErrors(cudaEventRecord(start, 0));
-    thrust::exclusive_scan(thrust::device, d_results, d_results + size, d_prefix);
+    thrust::exclusive_scan(thrust::device, d_results, d_results + (size*TARGET_NUM), d_prefix);
     checkCudaErrors(cudaEventRecord(stop, 0));
     checkCudaErrors(cudaEventSynchronize(stop));
     checkCudaErrors(cudaEventElapsedTime(&elapsedTime, start, stop));
@@ -319,10 +328,17 @@ void where(ResultDatabase &resultDB, OptionParser &op, int size, int coverage, o
 
     int matchSize;
     checkCudaErrors(cudaEventRecord(start, 0));
-    if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise || zero_copy) {
-        matchSize = (int)*(d_prefix + size - 1);
+    if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise || zero_copy || pud) {
+        matchSize = (int)*(d_prefix + (size*TARGET_NUM) - 1);
     } else {
-        checkCudaErrors(cudaMemcpy(&matchSize, d_prefix + size - 1, sizeof(int), cudaMemcpyDeviceToHost));
+        if (async) {
+            cudaStream_t s1;
+            checkCudaErrors(cudaStreamCreate(&s1));
+            checkCudaErrors(cudaMemcpyAsync(&matchSize, d_prefix + (size*TARGET_NUM) - 1, sizeof(int), cudaMemcpyDeviceToHost));
+            checkCudaErrors(cudaStreamDestroy(s1));
+        } else {
+            checkCudaErrors(cudaMemcpy(&matchSize, d_prefix + (size*TARGET_NUM) - 1, sizeof(int), cudaMemcpyDeviceToHost));
+        }
     }
     checkCudaErrors(cudaEventRecord(stop, 0));
     checkCudaErrors(cudaEventSynchronize(stop));
@@ -332,8 +348,8 @@ void where(ResultDatabase &resultDB, OptionParser &op, int size, int coverage, o
     cout << "matchsize: " << matchSize << endl;
 
 
-    if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise || zero_copy) {
-        checkCudaErrors(cudaMallocManaged( (void**) &d_final, sizeof(int) * matchSize));
+    if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise || zero_copy || pud) {
+        checkCudaErrors(cudaMallocManaged((void**) &d_final, sizeof(int) * matchSize));
         final = d_final;
     } else {
         checkCudaErrors(cudaMalloc( (void**) &d_final, sizeof(int) * matchSize));
@@ -343,7 +359,7 @@ void where(ResultDatabase &resultDB, OptionParser &op, int size, int coverage, o
 
     checkCudaErrors(cudaEventRecord(start, 0));
     if (coal)
-        mapMatchesCoal<<<grid, threads>>>(d_data_arr, d_results, d_prefix, d_final, size);
+        mapMatchesCoal<<<grid_coal, threads>>>(d_data_arr, d_results, d_prefix, d_final, size);
     else 
         mapMatches<<<grid, threads>>>(d_data_arr, d_results, d_prefix, d_final, size);
     checkCudaErrors(cudaEventRecord(stop, 0));
@@ -354,7 +370,7 @@ void where(ResultDatabase &resultDB, OptionParser &op, int size, int coverage, o
 
     checkCudaErrors(cudaEventRecord(start, 0));
     // No cpy just demand paging
-    if (uvm) {
+    if (uvm || pud) {
         // Do nothing
     } else if (zero_copy) {
         checkCudaErrors(cudaMemAdvise(final, sizeof(int) * matchSize, cudaMemAdviseSetAccessedBy, 0));
@@ -368,14 +384,18 @@ void where(ResultDatabase &resultDB, OptionParser &op, int size, int coverage, o
         checkCudaErrors(cudaMemAdvise(final, sizeof(int) * matchSize, cudaMemAdviseSetPreferredLocation, device));
         checkCudaErrors(cudaMemPrefetchAsync(final, sizeof(int) * matchSize, cudaCpuDeviceId));
     } else if (copy || pageable) {
-        checkCudaErrors(cudaMemcpy(final, d_final, sizeof(int) * matchSize, cudaMemcpyDeviceToHost));
+        if (async) {
+            checkCudaErrors(cudaMemcpyAsync(final, d_final, sizeof(int) * matchSize, cudaMemcpyDeviceToHost));
+        } else {
+            checkCudaErrors(cudaMemcpy(final, d_final, sizeof(int) * matchSize, cudaMemcpyDeviceToHost));
+        }
     }
     checkCudaErrors(cudaEventRecord(stop, 0));
     checkCudaErrors(cudaEventSynchronize(stop));
     checkCudaErrors(cudaEventElapsedTime(&elapsedTime, start, stop));
     transferTime += elapsedTime * 1.e-3;
 
-    if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise || zero_copy) {
+    if (uvm || uvm_advise || uvm_prefetch || uvm_prefetch_advise || zero_copy || pud) {
         checkCudaErrors(cudaFree(d_data_arr));
         checkCudaErrors(cudaFree(d_results));
         checkCudaErrors(cudaFree(d_prefix));
@@ -438,7 +458,6 @@ void addBenchmarkSpecOptions(OptionParser &op) {
 //void RunBenchmark(ResultDatabase &resultDB, OptionParser &op) {
 void RunBenchmark(ResultDatabase &resultDB, OptionParser &op, ofstream &ofile, sem_t *sem) {
     printf("Running Where\n");
-
     srand(7);
 
     bool quiet = op.getOptionBool("quiet");

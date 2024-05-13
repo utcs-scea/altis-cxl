@@ -30,14 +30,23 @@ benchmarks=('where' 'bfs' 'sort' 'cfd')
 # Low amplification
 benchmarks=('pathfinder' 'lavamd' 'mandelbrot' 'srad')
 
-benchmarks=('where' 'bfs' 'sort' 'pathfinder' 'lavamd' 'mandelbrot' 'srad' 'cfd' )
 benchmarks=('pathfinder' 'lavamd' 'mandelbrot' 'srad' 'cfd' )
-benchmarks=('where' 'sort' )
+benchmarks=('where' 'sort' 'lavamd' 'cfd' 'pathfinder' 'srad')
+benchmarks=('where' 'pathfinder')
+benchmarks=('where' 'mandelbrot' 'lavamd' 'pathfinder' 'sort' 'cfd' 'srad')
+benchmarks=('sort')
+benchmarks=('cfd' 'srad' 'sort')
+benchmarks=('cfd' 'sort')
+benchmarks=('where' 'lavamd')
+benchmarks=('fdtd2d')
+benchmarks=('where')
+config=('zero-copy')
 
 pwd="$(dirname $(pwd))"
 mkdir -p $pwd/results
 nvbit_results=$pwd/nvbit-results
 total_run=$1
+
 
 for bench in "${benchmarks[@]}"
 do
@@ -58,12 +67,12 @@ do
         fi
 
         dummy_var=$(cat $nvbit_results/$bench.csv | cut -d ',' -f1 | tr -d ' ')
-        #dummy_var=$(($dummy_var*32/1024/1024))
         dummy_var=$(($dummy_var*4/1024))
 
         echo "<<<<<Running $bench with dummy memory allocation $dummy_var>>>>>"
+        numactl --membind=0 --cpunodebind=0 \
         $pwd/build/bin/$level/$bench -s 4 --passes 1 \
-            --uvm -o $pwd/results/$bench-oversub.csv -b $bench --dummy $dummy_var --oversub-frac 1.2
+            --$config -o $pwd/results/$bench-oversub-$config.csv -b $bench --dummy $dummy_var --oversub-frac 1.2
         sleep 3
     done
 done
